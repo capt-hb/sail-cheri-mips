@@ -38,6 +38,7 @@ let max_otype = MAX(24) /*0xffffff*/
 struct Capability = {
   tag                     : bool    ,
   padding                 : bits(7) ,
+  uninit		  : bool    ,
   otype                   : bits(24),
   uperms                  : bits(16),
   perm_reserved12_14      : bits(3) ,
@@ -54,7 +55,6 @@ struct Capability = {
   permit_execute          : bool    ,
   global                  : bool    ,
   sealed                  : bool    ,
-  uninit		  : bool    ,
   address                 : bits(64),
   base                    : bits(64),
   length                  : bits(64),
@@ -63,6 +63,7 @@ struct Capability = {
 let null_cap : Capability = struct {
   tag = false,
   padding = zeros(),
+  uninit = false,
   otype = ones(),
   uperms = zeros(),
   perm_reserved12_14 = zeros(),
@@ -79,7 +80,6 @@ let null_cap : Capability = struct {
   permit_execute = false,
   global = false,
   sealed = false,
-  uninit = false,
   address = zeros(),
   base = zeros(),
   length = 0xffffffffffffffff
@@ -88,6 +88,7 @@ let null_cap : Capability = struct {
 let default_cap : Capability = struct {
   tag = true,
   padding = zeros(),
+  uninit = false,
   otype = ones(),
   uperms = ones(),
   perm_reserved12_14 = zeros(),
@@ -104,7 +105,6 @@ let default_cap : Capability = struct {
   permit_execute = true,
   global = true,
   sealed = false,
-  uninit = false,
   address = zeros(),
   base = zeros(),
   length = 0xffffffffffffffff
@@ -117,23 +117,23 @@ function capBitsToCapability(tag, capBits) : (bool, CapBits) -> Capability =
   struct {
     tag                        = tag,
     padding                    = capBits[255..249],
-    otype                      = capBits[248..225],
-    uperms                     = capBits[224..209],
-    perm_reserved12_14         = capBits[208..206],
-    permit_set_CID             = capBits[205],
-    access_system_regs         = capBits[204],
-    permit_unseal              = capBits[203],
-    permit_ccall               = capBits[202],
-    permit_seal                = capBits[201],
-    permit_store_local_cap     = capBits[200],
-    permit_store_cap           = capBits[199],
-    permit_load_cap            = capBits[198],
-    permit_store               = capBits[197],
-    permit_load                = capBits[196],
-    permit_execute             = capBits[195],
-    global                     = capBits[194],
-    sealed                     = capBits[193],
-    uninit                     = capBits[192],
+    uninit                     = capBits[248],
+    otype                      = capBits[247..224],
+    uperms                     = capBits[223..208],
+    perm_reserved12_14         = capBits[207..205],
+    permit_set_CID             = capBits[204],
+    access_system_regs         = capBits[203],
+    permit_unseal              = capBits[202],
+    permit_ccall               = capBits[201],
+    permit_seal                = capBits[200],
+    permit_store_local_cap     = capBits[199],
+    permit_store_cap           = capBits[198],
+    permit_load_cap            = capBits[197],
+    permit_store               = capBits[196],
+    permit_load                = capBits[195],
+    permit_execute             = capBits[194],
+    global                     = capBits[193],
+    sealed                     = capBits[192],
     address                    = capBits[191..128],
     base                       = capBits[127..64],
     length                     = capBits[63..0]
@@ -169,12 +169,12 @@ function getCapPerms(cap) =
 function capToBits(cap) : Capability -> CapBits =
   (
         cap.padding
+      @ cap.uninit
       @ cap.otype
       @ cap.uperms
       @ cap.perm_reserved12_14
       @ getCapHardPerms(cap)
       @ cap.sealed
-      @ cap.uninit
       @ cap.address
       @ cap.base
       @ cap.length
