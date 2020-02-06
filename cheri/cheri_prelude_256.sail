@@ -311,3 +311,11 @@ function setCapBounds(cap, base, top) =
 function getRepresentableAlignmentMask(len) : bits(64) -> bits(64) = ones()
 function getRepresentableLength(len) : bits(64) -> bits(64) = len
 
+val uninitCap : Capability -> Capability
+function uninitCap(cap) =
+    { cap with uninit=true }
+
+val capAddrReachedEnd : Capability -> bool
+function capAddrReachedEnd(cap) =
+    let top = cap.base + cap.length in
+    (cap.address >=_u top) & (top >=_u cap.address)
