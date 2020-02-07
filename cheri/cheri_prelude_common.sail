@@ -657,7 +657,9 @@ function capToString (cap, fixlen) = {
          concat_str(BitStr(to_bits(64, getCapOffset(cap))),
          concat_str(" base:",
          concat_str(BitStr(to_bits(64, getCapBase(cap))),
-         concat_str(" length:", len_str)))))))))))))
+         concat_str(" length:",
+	 concat_str(len_str,
+	 concat_str(" uninit:", if cap.uninit then "1" else "0")))))))))))))))
          }
 
 function dump_cp2_state () = {
