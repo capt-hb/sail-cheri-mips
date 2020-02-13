@@ -1182,8 +1182,8 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
     raise_c2_exception(CapEx_SealViolation, cb)
   else if not (cb_val.permit_store) then
     raise_c2_exception(CapEx_PermitStoreViolation, cb)
-  //else if (offset != zeros(8)) & (not (offset[0])) then // uninit: don't allow writing above cursor TODO: is this necessary? doesn't violate uninit property
-    //raise_c2_exception(CapEx_UninitViolation, cb)
+  else if (offset != zeros(8)) & (not (offset[7])) then // uninit: don't allow writing above cursor
+    raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
     let size   = wordWidthBytes(width);
@@ -1234,8 +1234,8 @@ function clause execute (UCStoreCap(ct, cs, cb, offset)) =
     raise_c2_exception(CapEx_PermitStoreCapViolation, cb)
   else if not (cb_val.permit_store_local_cap) & (cs_val.tag) & not (cs_val.global) then
     raise_c2_exception(CapEx_PermitStoreLocalCapViolation, cb)
-  //else if zeros(11) <_s offset then // uninit: don't allow writing above cursor TODO: fix like UCStore/ is this necessary? doesn't violate uninit prop
-    //raise_c2_exception(CapEx_UninitViolation, cb)
+  else if (offset != zeros(11)) & (not (offset[10])) then // uninit: don't allow writing above cursor
+    raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
     let cursor  = getCapCursor(cb_val);
