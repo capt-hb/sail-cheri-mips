@@ -215,7 +215,7 @@ enum CapEx = {
   CapEx_PermitUnsealViolation,
   CapEx_PermitSetCIDViolation,
   CapEx_UninitViolation,
-  CapEx_UninitLoadViolation
+  CapEx_UninitLoadViolation,
   CapEx_TLBLoadCap
 }
 
@@ -277,7 +277,7 @@ function string_of_capex (ex) : CapEx -> string =
     CapEx_PermitUnsealViolation         => "PermitUnsealViolation"       ,
     CapEx_PermitSetCIDViolation         => "PermitSetCIDViolation"       ,
     CapEx_UninitViolation               => "UninitViolation"             ,
-    CapEx_UninitLoadViolation           => "UninitLoadViolation"
+    CapEx_UninitLoadViolation           => "UninitLoadViolation"	 ,
     CapEx_TLBLoadCap                    => "TLBLoadCap"
   }
 
