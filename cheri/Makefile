@@ -19,8 +19,8 @@ MIPS_TLB:=$(MIPS_SAIL_DIR)/mips_tlb.sail
 MIPS_TLB_STUB:=$(MIPS_SAIL_DIR)/mips_tlb_stub.sail
 MIPS_INSTS:=$(MIPS_SAIL_DIR)/mips_insts.sail
 MIPS_EPILOGUE:=$(MIPS_SAIL_DIR)/mips_ri.sail $(MIPS_SAIL_DIR)/mips_epilogue.sail
-CHERI_PRE:=$(CHERI_SAIL_DIR)/cheri_types.sail $(CHERI_SAIL_DIR)/cheri_prelude_256.sail $(CHERI_SAIL_DIR)/cheri_prelude_common.sail
-CHERI128_PRE:=$(CHERI_SAIL_DIR)/cheri_types.sail $(CHERI_SAIL_DIR)/cheri_prelude_128.sail $(CHERI_SAIL_DIR)/cheri_prelude_common.sail
+CHERI_PRE:=$(CHERI_SAIL_DIR)/cheri_types.sail $(CHERI_SAIL_DIR)/cheri_prelude_256.sail $(CHERI_SAIL_DIR)/cheri_prelude_common.sail  $(MIPS_SAIL_DIR)/mips_ast_decl.sail
+CHERI128_PRE:=$(CHERI_SAIL_DIR)/cheri_types.sail $(CHERI_SAIL_DIR)/cheri_prelude_128.sail $(CHERI_SAIL_DIR)/cheri_prelude_common.sail $(MIPS_SAIL_DIR)/mips_ast_decl.sail
 CHERI_INSTS:=$(CHERI_SAIL_DIR)/cheri_insts.sail
 
 CHERI_SAILS:=$(MIPS_PRE) $(MIPS_TLB) $(CHERI_PRE) $(MIPS_INSTS) $(CHERI_INSTS) $(MIPS_EPILOGUE)
@@ -32,7 +32,7 @@ CHERI128_NO_TLB_SAILS:=$(MIPS_PRE) $(MIPS_TLB_STUB) $(CHERI128_PRE) $(MIPS_INSTS
 CHERI_MAIN:=$(MIPS_SAIL_DIR)/main.sail
 
 cheri: $(CHERI_SAILS) $(CHERI_MAIN)
-	$(SAIL) -ocaml -o $@ $^
+	$(SAIL) -ocaml_build_dir _sbuild_cheri -ocaml -o $@ $^
 
 cheri_coverage: $(CHERI_SAILS) $(CHERI_MAIN)
 	$(SAIL) -ocaml-coverage -ocaml -o $@ $^
@@ -82,7 +82,7 @@ install_latex:
 	cp sail_latexcc/*.tex $(CHERI_ARCH_PATH)/sail_latexcc
 
 cheri128: $(CHERI128_SAILS) $(CHERI_MAIN)
-	$(SAIL) -ocaml -o $@ $^
+	$(SAIL) -ocaml_build_dir _sbuild_cheri128 -ocaml -o $@ $^
 
 cheri128_trace: $(CHERI128_SAILS) $(CHERI_MAIN)
 	$(SAIL) -ocaml_trace -o $@ $^
@@ -92,6 +92,13 @@ cheri128.c: $(CHERI128_SAILS) $(CHERI_MAIN)
 
 cheri128_c: cheri128.c $(SAIL_LIB_DIR)/sail.h Makefile
 	gcc $(C_OPT) $(GCOV_FLAGS) $< $(SAIL_LIB_DIR)/*.c -lgmp -lz -I $(SAIL_LIB_DIR) -o $@
+
+
+# test Ott raw pp
+.PHONY: cheri128_ast
+cheri128_ast: $(CHERI128_SAILS) $(CHERI_MAIN)
+	../../sail/sail -ddump_tc_ast_ott_raw ../generated_definitions/ast/cheri128-ast-raw.txt -ddump_tc_ast_ott_pp ../generated_definitions/ast/cheri128-ast-pp.txt -ocaml -o $@ $^
+
 
 # Note that for coverage purposes O1 appears optimal. O0 means lots of obviously dead code but O2 risks reducing granularity too much.
 cheri128_c_gcov: C_OPT=-O1
@@ -132,10 +139,10 @@ C%.thy: c%.lem c%_types.lem $(MIPS_SAIL_DIR)/mips_extras.lem
 %Theory.uo: %Script.sml
 	SAIL_LIB_DIR="$(SAIL_LIB_DIR)" Holmake $@
 
-cheri.v cheri_types.v: $(CHERI_SAILS)
+cheri.v cheri_types.v: $(CHERI_SAILS) $(CHERI_SAIL_DIR)/cheri_termination.sail
 	$(SAIL) -coq -o cheri -coq_lib mips_extras -undefined_gen -memo_z3 -dcoq_undef_axioms $^
 
-cheri128.v cheri128_types.v: $(CHERI128_SAILS)
+cheri128.v cheri128_types.v: $(CHERI128_SAILS) $(CHERI_SAIL_DIR)/cheri_termination.sail
 	$(SAIL) -coq -o cheri128 -coq_lib mips_extras -undefined_gen -memo_z3 -dcoq_undef_axioms $^
 
 CHERI_COQ = cheri_types.v mips_extras.v cheri.v
@@ -161,7 +168,7 @@ qtest: cheri_cc_qtest
 	./cheri_cc_qtest_build/main.native --verbose
 
 clean:
-	rm -rf cheri cheri_trace cheri_coverage cheri_c cheri128 cheri128_trace cheri128_c _sbuild inst_*.sail cheri.c cheri128.c sail_latex sail_latexcc coverage_report
+	rm -rf cheri cheri_trace cheri_coverage cheri_c cheri128 cheri128_trace cheri128_c _sbuild _sbuild_cheri _sbuild_cheri128 inst_*.sail cheri.c cheri128.c sail_latex sail_latexcc coverage_report
 	rm -f cheriScript.sml cheri_typesScript.sml mips_extrasScript.sml
 	rm -f cheri.v cheri_types.v $(CHERI_COQ:%.v=%.vo) $(CHERI_COQ:%.v=%.glob) $(CHERI_COQ:%.v=.%.aux)
 	rm -f cheri128.v cheri128_types.v $(CHERI128_COQ:%.v=%.vo) $(CHERI128_COQ:%.v=%.glob) $(CHERI128_COQ:%.v=.%.aux)

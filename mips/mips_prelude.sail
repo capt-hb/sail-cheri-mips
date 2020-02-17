@@ -57,6 +57,7 @@ bitfield CauseReg : bits(32) = {
 bitfield TLBEntryLoReg : bits(64) = {
   CapS : 63,
   CapL : 62,
+  CapLG : 61, /* CHERI: Capability Load Generation */
   PFN : 29.. 6,
   C : 5.. 3,
   D : 2,
@@ -66,6 +67,9 @@ bitfield TLBEntryLoReg : bits(64) = {
 
 bitfield TLBEntryHiReg : bits(64) = {
   R : 63.. 62,
+  CLGK : 61, /* CHERI: Capability Load Generation for Kernel pages */
+  CLGS : 60, /* ... Supervisor pages */
+  CLGU : 59, /* ... User pages */
   VPN2 : 39.. 13,
   ASID : 7..  0,
 }
@@ -93,19 +97,21 @@ let MAX_U64 = MAX(64) /*unsigned(0xffffffffffffffff)*/
 let MAX_VA  = MAX(40) /*unsigned(0xffffffffff)*/
 let MAX_PA  = MAX(36) /*unsigned(0xfffffffff)*/
 
-bitfield TLBEntry : bits(117) = {
-  pagemask : 116..  101,
-  r        : 100..  99,
-  vpn2     : 98..  72,
-  asid     : 71..  64,
-  g        : 63,
-  valid    : 62,
-  caps1    : 61,
-  capl1    : 60,
-  pfn1     : 59..  36,
-  c1       : 35..  33,
-  d1       : 32,
-  v1       : 31,
+bitfield TLBEntry : bits(119) = {
+  pagemask : 118..  103,
+  r        : 102..  101,
+  vpn2     : 100..  74,
+  asid     : 73..  66,
+  g        : 65,
+  valid    : 64,
+  caplg1   : 63,
+  caps1    : 62,
+  capl1    : 61,
+  pfn1     : 60..  37,
+  c1       : 36..  34,
+  d1       : 33,
+  v1       : 32,
+  caplg0   : 31,
   caps0    : 30,
   capl0    : 29,
   pfn0     : 28..  5,
@@ -516,6 +522,9 @@ function SignalExceptionTLB(ex, badAddr) = {
 }
 
 enum MemAccessType = {Instruction, LoadData, StoreData}
+
+enum MemAccessCapRestriction = { Unrestricted, Trap, Clear }
+
 enum AccessLevel = {User, Supervisor, Kernel} 
 
 val int_of_AccessLevel : AccessLevel -> {|0, 1, 2|} effect pure
@@ -552,13 +561,13 @@ val checkCP0AccessHook : unit->unit effect{escape, rreg, wreg}
 val checkCP0Access : unit->unit effect{escape, rreg, wreg}
 function checkCP0Access () =
   {
-    checkCP0AccessHook();
     let accessLevel = getAccessLevel() in
     if ((accessLevel != Kernel) & (~(CP0Status.CU()[0]))) then
       {
         CP0Cause->CE() = 0b00;
         SignalException(CpU);
-      }
+      };
+    checkCP0AccessHook();
   }
 
 val incrementCP0Count : unit -> unit effect {rreg,wreg,escape}
@@ -581,12 +590,19 @@ function incrementCP0Count() = {
 }
 
 type regno = bits(5)                      /* a register number */
+type IntRegEnc = bits(5)                  /* a register number */
 type imm16 = bits(16)                     /* 16-bit immediate */
-/* a commonly used instruction format with three register operands */
-type regregreg = (regno, regno, regno)
-/* a commonly used instruction format with two register operands and 16-bit immediate */
-type regregimm16 = (regno, regno, imm16)
 
+function strReg(r) : regno -> string = concat_str_dec("$", unsigned(r))
+function strRRRArgs(r2 : regno, r1 : regno, rd : regno) -> string = strReg(rd) ^ ", " ^ strReg(r1) ^ ", " ^ strReg(r2)
+val strRRIArgs : forall 'n, 'n > 0 . (regno, regno, bits('n)) -> string
+function strRRIArgs(rs, rd, imm) = strReg(rd) ^ ", " ^ strReg(rs) ^ ", " ^ dec_str(signed(imm))
+val strRRIUArgs : forall 'n, 'n > 0 . (regno, regno, bits('n)) -> string
+function strRRIUArgs(rs, rd, imm) = strReg(rd) ^ ", " ^ strReg(rs) ^ ", " ^ hex_str(unsigned(imm))
+val strRIArgs : forall 'n, 'n > 0 . (regno, bits('n)) -> string
+function strRIArgs(rd, imm) = strReg(rd) ^ ", " ^ hex_str(unsigned(imm))
+val strMemArgs : forall 'n, 'n > 0 . (regno, regno, bits('n)) -> string
+function strMemArgs(base, rt, offset) = strReg(rt) ^ ", " ^ dec_str(signed(offset)) ^ "(" ^ strReg(base) ^ ")"
 enum decode_failure = { 
   no_matching_pattern, 
   unsupported_instruction, 
@@ -606,6 +622,17 @@ enum Comparison = {
   LTU /* unsigned less than or qual */ 
 }
 
+function strCmp (cmp : Comparison) -> string = match cmp {
+  EQ  => "eq",
+  NE  => "ne",
+  GE  => "ge",
+  GEU => "geu",
+  GT  => "gt",
+  LE  => "le",
+  LT  => "lt",
+  LTU => "ltu"
+}
+
 val compare : (Comparison, bits(64), bits(64)) -> bool
 function compare (cmp, valA, valB) =
   match cmp {
@@ -620,6 +647,13 @@ function compare (cmp, valA, valB) =
   }
 enum WordType = { B, H, W, D}
 enum WordTypeUnaligned = { WL, WR, DL, DR }
+
+function strWordType(w : WordType) -> string = match w {
+  B => "b",
+  H => "h",
+  W => "w",
+  D => "d"
+}
 
 /* Compute the address and number of bytes touched by an unaligned memory operation.
    Assumes big-endian mode. */

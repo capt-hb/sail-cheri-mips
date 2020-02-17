@@ -32,14 +32,9 @@
 /*  SUCH DAMAGE.                                                          */
 /*========================================================================*/
 
-
-scattered union ast
-
-val execute : ast -> unit effect {barr, eamem, escape, rmem, rmemt, rreg, undef, wmv, wmvt, wreg}
-scattered function execute
-
-val decode : bits(32) -> option(ast) effect pure
-scattered function decode
+type CapRegEnc = bits(5)                    /* a register number */
+type CapRegOrDDCEnc = bits(5)               /* a register number */
+type CapHwrEnc = bits(5)                    /* a register number */
 
 register PCC        : Capability
 register NextPCC    : Capability
@@ -221,6 +216,7 @@ enum CapEx = {
   CapEx_PermitSetCIDViolation,
   CapEx_UninitViolation,
   CapEx_UninitLoadViolation
+  CapEx_TLBLoadCap
 }
 
 function CapExCode(ex) : CapEx -> bits(8)=
@@ -236,6 +232,7 @@ function CapExCode(ex) : CapEx -> bits(8)=
     CapEx_UserDefViolation              => 0x08,
     CapEx_TLBNoStoreCap                 => 0x09,
     CapEx_InexactBounds                 => 0x0a,
+    CapEx_TLBLoadCap                    => 0x0c,
     CapEx_GlobalViolation               => 0x10,
     CapEx_PermitExecuteViolation        => 0x11,
     CapEx_PermitLoadViolation           => 0x12,
@@ -281,6 +278,7 @@ function string_of_capex (ex) : CapEx -> string =
     CapEx_PermitSetCIDViolation         => "PermitSetCIDViolation"       ,
     CapEx_UninitViolation               => "UninitViolation"             ,
     CapEx_UninitLoadViolation           => "UninitLoadViolation"
+    CapEx_TLBLoadCap                    => "TLBLoadCap"
   }
 
 bitfield CapCauseReg : bits(16) = {
@@ -352,15 +350,6 @@ function SignalException (ex) = {
   CP0Status->EXL()    = 0b1;
   throw (ISAException());
 }
-
-function ERETHook() : unit -> unit =
-  {
-    if (CP0Status.ERL() == bitone) then
-      set_next_pcc(ErrorEPCC)
-    else
-      set_next_pcc(EPCC);
-  }
-
 
 val raise_c2_exception8 : forall ('o : Type) . (CapEx, bits(8)) -> 'o effect {escape, rreg, wreg}
 function raise_c2_exception8(capEx, regnum) =
@@ -638,13 +627,19 @@ function set_CP0ErrorEPC (v) = {
       unrepCap(newErrorEPCC);
 }
 
+/*! Tests whether the capability has a reserved otype (larger than max_otype).
+    Note that this includes both sealed (e.g. sentry) and unsealed (e.g. all ones)
+    otypes. */
+val hasReservedOType : Capability -> bool
+function hasReservedOType(cap) = unsigned(cap.otype) > max_otype
+
 function capToString (cap, fixlen) = {
          skip_escape(); /* because cheri128 getCapX functions contain asserts but cheri256 ones do not */
          len = getCapLength(cap);
          /* When dumping caps at end of test we cap length at 64 bits for compatibility with test suite, when tracing we print the actual value */
          len_str = if fixlen then BitStr(to_bits(64, min(len, MAX(64)))) else BitStr(to_bits(68, len));
          /* Print architectural type which is -1 for unsealed caps */
-         let otype64 : bits(64) = if cap.sealed then zero_extend(cap.otype) else ones();
+         let otype64 : bits(64) = if hasReservedOType(cap) then sign_extend(cap.otype) else zero_extend(cap.otype);
          concat_str(" t:",
          concat_str(if cap.tag then "1" else "0",
          concat_str(" s:",
@@ -693,3 +688,14 @@ THIS`(cap, flags)` sets the architecture specific capability flags on `cap` to `
  */
 val setCapFlags : (Capability, CFlags) -> Capability
 function setCapFlags(cap, flags) = cap
+
+/*! Returns true if the given capability is a sealed entry capability. */
+val isSentryCap : Capability -> bool
+function isSentryCap (cap) = signed(cap.otype) == otype_sentry
+
+function ERETHook() : unit -> unit =
+  {
+    let epcc_val = if (CP0Status.ERL() == bitone) then ErrorEPCC else EPCC;
+    let new_pcc = if isSentryCap(epcc_val) then unsealCap(epcc_val) else epcc_val;
+    set_next_pcc(new_pcc)
+  }

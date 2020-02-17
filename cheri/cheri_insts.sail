@@ -62,9 +62,9 @@ function clause execute (CGetType(rd, cb)) =
 {
   checkCP2usable();
   let capVal = readCapReg(cb);
-  wGPR(rd) = if capVal.sealed
-    then zero_extend(capVal.otype)
-    else 0xffffffffffffffff
+  wGPR(rd) = if hasReservedOType(capVal)
+    then sign_extend(capVal.otype) /* return negative for reserved otypes */
+    else zero_extend(capVal.otype)
 }
 
 function clause execute (CGetBase(rd, cb)) =
@@ -162,6 +162,29 @@ function clause execute (CGetPCCSetOffset(cd, rs)) =
   else
     writeCapReg(cd, unrepCap(newPCC));
 }
+union clause ast = CGetPCCIncOffset : (regno, regno)
+function clause execute (CGetPCCIncOffset(cd, rs)) =
+{
+  checkCP2usable();
+  let rs_val = rGPR(rs);
+  let (success, newCap) = setCapOffset(PCC, PC + rs_val);
+  if success then
+      writeCapReg(cd, newCap)
+  else
+      writeCapReg(cd, unrepCap(newCap))
+}
+union clause ast = CGetPCCSetAddr : (regno, regno)
+function clause execute (CGetPCCSetAddr(cd, rs)) =
+{
+  checkCP2usable();
+  let rs_val = rGPR(rs);
+  let (success, newCap) = setCapAddr(PCC, rs_val);
+  if success then
+      writeCapReg(cd, newCap)
+  else
+      writeCapReg(cd, unrepCap(newCap))
+}
+
 /* Get and Set CP2 cause register */
 
 union clause ast = CGetCause : regno
@@ -379,25 +402,9 @@ function clause execute(CPtrCmp(rd, cb, ct, op)) =
   checkCP2usable();
   let cb_val = readCapReg(cb);
   let ct_val = readCapReg(ct);
-  equal : bool = false;
-  ltu   : bool = false;
-  lts   : bool = false;
-  if cb_val.tag != ct_val.tag then
-    {
-      if not (cb_val.tag) then
-        {
-          ltu = true;
-          lts = true;
-        }
-    }
-  else
-    {
-      cursor1 = getCapCursor(cb_val);
-      cursor2 = getCapCursor(ct_val);
-      equal   = (cursor1 == cursor2);
-      ltu     = (cursor1 < cursor2);
-      lts     = to_bits(64, cursor1) <_s to_bits(64, cursor2);
-    };
+  let equal : bool = cb_val.address == ct_val.address;
+  let ltu : bool = cb_val.address <_u ct_val.address;
+  let lts : bool = cb_val.address <_s ct_val.address;
   let cmp : bool = match op {
     CEQ    => equal,
     CNE    => not (equal),
@@ -706,21 +713,18 @@ function clause execute (CCopyType(cd, cb, ct)) =
     raise_c2_exception(CapEx_TagViolation, cb)
   else if cb_val.sealed then
     raise_c2_exception(CapEx_SealViolation, cb)
-  else if ct_val.sealed then
-  {
-    if ct_otype < cb_base then
-      raise_c2_exception(CapEx_LengthViolation, cb)
-    else if ct_otype >= cb_top then
-      raise_c2_exception(CapEx_LengthViolation, cb)
-    else
-    {
-      let (success, cap) = setCapOffset(cb_val, to_bits(64, ct_otype - cb_base));
-      assert(success, "CopyType: offset is in bounds so should be representable");
-      writeCapReg(cd, cap);
-    }
-  }
+  else if not(ct_val.sealed) | hasReservedOType(ct_val) then
+    writeCapReg(cd, {null_cap with address = sign_extend(ct_val.otype)})
+  else if ct_otype < cb_base then
+    raise_c2_exception(CapEx_LengthViolation, cb)
+  else if ct_otype >= cb_top then
+    raise_c2_exception(CapEx_LengthViolation, cb)
   else
-    writeCapReg(cd, {null_cap with address=ones()})
+  {
+    let (success, cap) = setCapOffset(cb_val, to_bits(64, ct_otype - cb_base));
+    assert(success, "CopyType: offset is in bounds so should be representable");
+    writeCapReg(cd, cap);
+  }
 }
 
 union clause ast = CCheckPerm : (regno, regno)
@@ -746,9 +750,9 @@ function clause execute (CCheckType(cs, cb)) =
     raise_c2_exception(CapEx_TagViolation, cs)
   else if not (cb_val.tag) then
     raise_c2_exception(CapEx_TagViolation, cb)
-  else if not (cs_val.sealed) then
+  else if not(cs_val.sealed) | hasReservedOType(cs_val) then /* XXX should make latter a TypeViolation? */
     raise_c2_exception(CapEx_SealViolation, cs)
-  else if not (cb_val.sealed) then
+  else if not(cb_val.sealed) | hasReservedOType(cb_val) then  /* XXX should make latter a TypeViolation? */
     raise_c2_exception(CapEx_SealViolation, cb)
   else if cs_val.otype != cb_val.otype then
     raise_c2_exception(CapEx_TypeViolation, cs)
@@ -811,7 +815,7 @@ function clause execute (CSeal(cd, cs, ct)) =
     raise_c2_exception(CapEx_LengthViolation, ct)
   else if ct_cursor >= ct_top then
     raise_c2_exception(CapEx_LengthViolation, ct)
-  else if ct_cursor > max_otype then
+  else if ct_cursor > max_otype then /* prevents sealing with reserved or invalid otypes */
     raise_c2_exception(CapEx_LengthViolation, ct)
   else
   {
@@ -834,8 +838,21 @@ function clause execute (CCSeal(cd, cs, ct)) =
   let ct_base   = getCapBase(ct_val);
   if not (cs_val.tag) then
     raise_c2_exception(CapEx_TagViolation, cs)
-  else if not (ct_val.tag) | (getCapCursor(ct_val) == MAX_U64) then
-    writeCapReg(cd, cs_val)
+  else if (ct_val.address == otype_sentry_bits) then {
+    if cs_val.sealed then
+      raise_c2_exception(CapEx_SealViolation, cs)
+    else if not(cs_val.permit_execute) then
+      raise_c2_exception(CapEx_PermitExecuteViolation, cs)
+    else
+    {
+      let (success, newCap) = sealCap(cs_val, to_bits(24, otype_sentry));
+      if not (success) then
+        raise_c2_exception(CapEx_InexactBounds, cs)
+      else
+        writeCapReg(cd, newCap)
+    }
+  } else if not(ct_val.tag) | (ct_val.address == otype_unsealed_bits) then
+    writeCapReg(cd, cs_val) /* unsealed, just copy cs */
   else if cs_val.sealed then
     raise_c2_exception(CapEx_SealViolation, cs)
   else if ct_val.sealed then
@@ -847,10 +864,34 @@ function clause execute (CCSeal(cd, cs, ct)) =
   else if ct_cursor >= ct_top then
     raise_c2_exception(CapEx_LengthViolation, ct)
   else if ct_cursor > max_otype then
-    raise_c2_exception(CapEx_LengthViolation, ct)
+    raise_c2_exception(CapEx_TypeViolation, ct)
   else
   {
     let (success, newCap) = sealCap(cs_val, to_bits(24, ct_cursor));
+    if not (success) then
+        raise_c2_exception(CapEx_InexactBounds, cs)
+    else
+        writeCapReg(cd, newCap)
+  }
+}
+
+union clause ast = CSealEntry : (regno, regno)
+function clause execute (CSealEntry(cd, cs)) =
+{
+  checkCP2usable();
+  let cs_val = readCapReg(cs);
+  let cs_cursor = getCapCursor(cs_val);
+  let cs_top    = getCapTop(cs_val);
+  let cs_base   = getCapBase(cs_val);
+  if not (cs_val.tag) then
+    raise_c2_exception(CapEx_TagViolation, cs)
+  else if cs_val.sealed then
+    raise_c2_exception(CapEx_SealViolation, cs)
+  else if not (cs_val.permit_execute) then
+    raise_c2_exception(CapEx_PermitExecuteViolation, cs)
+  else
+  {
+    let (success, newCap) = sealCap(cs_val, to_bits(24, otype_sentry));
     if not (success) then
         raise_c2_exception(CapEx_InexactBounds, cs)
     else
@@ -863,6 +904,7 @@ function clause execute (CUnseal(cd, cs, ct)) =
 {
   checkCP2usable();
   let cs_val = readCapReg(cs);
+  let cs_otype  = unsigned(cs_val.otype);
   let ct_val = readCapReg(ct);
   let ct_cursor = getCapCursor(ct_val);
   if not (cs_val.tag) then
@@ -873,7 +915,9 @@ function clause execute (CUnseal(cd, cs, ct)) =
     raise_c2_exception(CapEx_SealViolation, cs)
   else if ct_val.sealed then
     raise_c2_exception(CapEx_SealViolation, ct)
-  else if ct_cursor != unsigned(cs_val.otype) then
+  else if hasReservedOType(cs_val) then
+    raise_c2_exception(CapEx_TypeViolation, cs)
+  else if ct_cursor != cs_otype then
     raise_c2_exception(CapEx_TypeViolation, ct)
   else if not (ct_val.permit_unseal) then
     raise_c2_exception(CapEx_PermitUnsealViolation, ct)
@@ -901,9 +945,9 @@ function clause execute (CCall(cs, cb, 0b00000000000)) = /* selector=0 */
     raise_c2_exception(CapEx_TagViolation, cs)
   else if not (cb_val.tag) then
     raise_c2_exception(CapEx_TagViolation, cb)
-  else if not (cs_val.sealed) then
+  else if not(cs_val.sealed) | hasReservedOType(cs_val) then /* XXX Should latter be type violation? */
     raise_c2_exception(CapEx_SealViolation, cs)
-  else if not (cb_val.sealed) then
+  else if not(cb_val.sealed) | hasReservedOType(cb_val) then  /* XXX Should latter be type violation? */
     raise_c2_exception(CapEx_SealViolation, cb)
   else if cs_val.otype != cb_val.otype then
     raise_c2_exception(CapEx_TypeViolation, cs)
@@ -932,9 +976,9 @@ function clause execute (CCall(cs, cb, 0b00000000001)) = /* selector=1 */
     raise_c2_exception(CapEx_TagViolation, cs)
   else if not (cb_val.tag) then
     raise_c2_exception(CapEx_TagViolation, cb)
-  else if not (cs_val.sealed) then
+  else if hasReservedOType(cs_val) then
     raise_c2_exception(CapEx_SealViolation, cs)
-  else if not (cb_val.sealed) then
+  else if hasReservedOType(cb_val) then
     raise_c2_exception(CapEx_SealViolation, cb)
   else if cs_val.otype != cb_val.otype then
     raise_c2_exception(CapEx_TypeViolation, cs)
@@ -1001,13 +1045,14 @@ function clause execute(CJALR(cd, cb, link)) =
   checkCP2usable();
   if InBranchDelay then
      SignalException(ResI);
-  let cb_val = readCapReg(cb);
+  cb_val = readCapReg(cb);
   let cb_ptr = getCapCursor(cb_val);
   let cb_top = getCapTop(cb_val);
   let cb_base= getCapBase(cb_val);
+  let sentry = isSentryCap(cb_val);
   if not (cb_val.tag) then
     raise_c2_exception(CapEx_TagViolation, cb)
-  else if (cb_val.sealed) then
+  else if (cb_val.sealed & not(sentry)) then
     raise_c2_exception(CapEx_SealViolation, cb)
   else if not (cb_val.permit_execute) then
     raise_c2_exception(CapEx_PermitExecuteViolation, cb)
@@ -1019,11 +1064,18 @@ function clause execute(CJALR(cd, cb, link)) =
     SignalException(AdEL)
   else
   {
+    if sentry then
+       cb_val = unsealCap(cb_val);
     if link then
     {
       let (success, linkCap) = setCapOffset(PCC, PC+8);
       assert(success, "Link cap should always be representable.");
-      writeCapReg(cd, linkCap);
+      if sentry then {
+        let (success2, sealedLink) = sealCap(linkCap, to_bits(24, otype_sentry));
+        assert(success2, "Sealing should always be possible with current format.");
+        writeCapReg(cd, sealedLink);
+      } else
+        writeCapReg(cd, linkCap);
     };
     execute_branch_pcc(cb_val);
   };
@@ -1122,13 +1174,21 @@ function clause execute (CLoadTags(rd, cb)) =
       SignalExceptionBadAddr(AdEL, vAddr64)
     else
       {
-        x : bits(64)  = zeros();
-        foreach(i from 0 to (caps_per_cacheline - 1)) {
-          let pAddr    = TLBTranslate(vAddr64 + i*cap_size, LoadData);
-          let (tag, _) = MEMr_tagged(pAddr, cap_size, true);
-          x[i] = tag;
-        };
-        wGPR(rd) = x;
+        let (pAddr, macr) = TLBTranslateC(vAddr64, LoadData);
+
+        match macr {
+          Clear => raise_c2_exception(CapEx_TLBLoadCap, cb),
+          Trap => raise_c2_exception(CapEx_TLBLoadCap, cb),
+
+          Unrestricted => {
+            x : bits(64)  = zeros();
+            foreach(i from 0 to (caps_per_cacheline - 1)) {
+              let (tag, _) = MEMr_tagged(pAddr + i*cap_size, cap_size, true);
+              x[i] = tag;
+            };
+            wGPR(rd) = x;
+          }
+        }
       }
   }
 }
@@ -1336,11 +1396,13 @@ function clause execute (CSC(cs, cb, rt, offset)) =
       SignalExceptionBadAddr(AdES, vAddr64)
     else
     {
-      let (pAddr, noStoreCap) = TLBTranslateC(vAddr64, StoreData);
-      if cs_val.tag & noStoreCap then
-        raise_c2_exception(CapEx_TLBNoStoreCap, cs)
-      else 
-        MEMw_tagged(pAddr, cap_size, cs_val.tag, capToMemBits(cs_val));
+      let (pAddr, macr) = TLBTranslateC(vAddr64, StoreData);
+      let mtag : bool = match (if cs_val.tag == false then Unrestricted else macr) {
+        Unrestricted => cs_val.tag,
+        Clear => false,
+        Trap  => raise_c2_exception(CapEx_TLBNoStoreCap, cs)
+      };
+      MEMw_tagged(pAddr, cap_size, mtag, capToMemBits(cs_val))
     }
   }
 }
@@ -1373,17 +1435,17 @@ function clause execute (CSCC(cs, cb, rd)) =
       SignalExceptionBadAddr(AdES, vAddr64)
     else
     {
-      let (pAddr, noStoreCap) = TLBTranslateC(vAddr64, StoreData);
-      if cs_val.tag & noStoreCap then
-        raise_c2_exception(CapEx_TLBNoStoreCap, cs)
-      else
-      {
-        let success = if (CP0LLBit[0]) then
-            MEMw_tagged_conditional(pAddr, cap_size, cs_val.tag, capToMemBits(cs_val))
-          else
-            false;
-        wGPR(rd) = zero_extend(success);
-      }
+      let (pAddr, macr) = TLBTranslateC(vAddr64, StoreData);
+      let mtag : bool = match (if cs_val.tag == false then Unrestricted else macr) {
+        Trap => raise_c2_exception(CapEx_TLBNoStoreCap, cs),
+        Clear => false,
+        Unrestricted => cs_val.tag
+      };
+      let success = if (CP0LLBit[0]) then
+          MEMw_tagged_conditional(pAddr, cap_size, mtag, capToMemBits(cs_val))
+        else
+          false;
+      wGPR(rd) = zero_extend(success);
     }
   }
 }
@@ -1414,12 +1476,14 @@ function clause execute (CLC(cd, cb, rt, offset)) =
       SignalExceptionBadAddr(AdEL, vAddr64)
     else
     {
-      let (pAddr, suppressTag) = TLBTranslateC(vAddr64, LoadData);
+      let (pAddr, macr) = TLBTranslateC(vAddr64, LoadData);
       let (tag, mem) =
-        MEMr_tagged(pAddr, cap_size, cb_val.permit_load_cap & not (suppressTag))
+        MEMr_tagged(pAddr, cap_size, cb_val.permit_load_cap & not (macr == Clear))
       in
-      let cap = memBitsToCapability(tag, mem) in
-      writeCapReg(cd, cap);
+      if tag & macr == Trap then
+        raise_c2_exception(CapEx_TLBLoadCap, cb)
+      else let cap = memBitsToCapability(tag, mem) in
+           writeCapReg(cd, cap);
     }
   }
 }
@@ -1454,12 +1518,14 @@ function clause execute (CLCBI(cd, cb, offset)) =
       SignalExceptionBadAddr(AdEL, vAddr64)
     else
     {
-      let (pAddr, suppressTag) = TLBTranslateC(vAddr64, LoadData);
+      let (pAddr, macr) = TLBTranslateC(vAddr64, LoadData);
       let (tag, mem) =
-        MEMr_tagged(pAddr, cap_size, cb_val.permit_load_cap & not (suppressTag))
+        MEMr_tagged(pAddr, cap_size, cb_val.permit_load_cap & not (macr == Clear))
       in
-      let cap = memBitsToCapability(tag, mem) in
-      writeCapReg(cd, cap);
+      if tag & macr == Trap then
+        raise_c2_exception(CapEx_TLBLoadCap, cb)
+      else let cap = memBitsToCapability(tag, mem) in
+           writeCapReg(cd, cap);
     }
   }
 }
@@ -1487,54 +1553,20 @@ function clause execute (CLLC(cd, cb)) =
       SignalExceptionBadAddr(AdEL, vAddr64)
     else
     {
-      let (pAddr, suppressTag) = TLBTranslateC(vAddr64, LoadData);
+      let (pAddr, macr) = TLBTranslateC(vAddr64, LoadData);
       let (tag, mem) =
-        MEMr_tagged_reserve(pAddr, cap_size, cb_val.permit_load_cap & not (suppressTag))
+        MEMr_tagged_reserve(pAddr, cap_size, cb_val.permit_load_cap & not (macr == Clear))
       in
-      let cap = memBitsToCapability(tag, mem) in
-      writeCapReg(cd, cap);
-      CP0LLBit  = 0b1;
-      CP0LLAddr = pAddr;
-    }
-  }
-}
-
-union clause ast = CCLC : (regno, regno)
-function clause execute (CCLC(cd, cb)) =
-{
-  checkCP2usable();
-  if (CP0LLBit[0]) then
-  {
-    let cb_val = readCapRegDDC(cb);
-
-    if not (cb_val.tag) then
-      raise_c2_exception(CapEx_TagViolation, cb)
-    else if cb_val.sealed then
-      raise_c2_exception(CapEx_SealViolation, cb)
-    else if not (cb_val.permit_load) then
-      raise_c2_exception(CapEx_PermitLoadViolation, cb)
-    else
-    {
-      let vAddr   = getCapCursor(cb_val);
-      let vAddr64 = to_bits(64, vAddr);
-      if (vAddr + cap_size) > getCapTop(cb_val) then
-        raise_c2_exception(CapEx_LengthViolation, cb)
-      else if vAddr < getCapBase(cb_val) then
-        raise_c2_exception(CapEx_LengthViolation, cb)
-      else if (vAddr % cap_size) != 0 then
-        SignalExceptionBadAddr(AdEL, vAddr64)
-      else
-      {
-        let (pAddr, suppressTag) = TLBTranslateC(vAddr64, LoadData);
-        let (tag, mem) : (bool, CapBits) =
-          MEMr_tagged_reserve(pAddr, cap_size, cb_val.permit_load_cap & not(suppressTag));
-        let cap = memBitsToCapability(tag, mem);
+      if tag & macr == Trap then
+        raise_c2_exception(CapEx_TLBLoadCap, cb)
+      else {
+        let cap = memBitsToCapability(tag, mem) in
         writeCapReg(cd, cap);
+        CP0LLBit  = 0b1;
+        CP0LLAddr = pAddr;
       }
     }
   }
-  else
-    writeCapReg(cd, null_cap);
 }
 
 union clause ast = CClearTags : (regno)
@@ -1578,41 +1610,41 @@ function clause execute (C2Dump (rt)) =
     () /* Currently a NOP */
 
 /* Old encodings */
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ 0b00000000 @ 0b000) = Some(CGetPerm(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ 0b00000000 @ 0b001) = Some(CGetType(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ 0b00000000 @ 0b010) = Some(CGetBase(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ 0b00000000 @ 0b011) = Some(CGetLen(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ 0b00000000 @ 0b101) = Some(CGetTag(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ 0b00000000 @ 0b110) = Some(CGetSealed(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @    0b00000 @ 0b00000000 @ 0b100) = Some(CGetCause(rd))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ 0b00000000 @ 0b000) = Some(CGetPerm(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ 0b00000000 @ 0b001) = Some(CGetType(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ 0b00000000 @ 0b010) = Some(CGetBase(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ 0b00000000 @ 0b011) = Some(CGetLen(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ 0b00000000 @ 0b101) = Some(CGetTag(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ 0b00000000 @ 0b110) = Some(CGetSealed(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @    0b00000 @ 0b00000000 @ 0b100) = Some(CGetCause(rd))
 
 function clause decode (0b010010 @ 0b00110 @ 0b000000000000000000000) = Some(CReturn())
 
-function clause decode (0b010010 @ 0b01101 @ rd : regno @ cb : regno @ 0b00000000 @ 0b010) = Some(CGetOffset(rd, cb)) /* NB encoding does not follow pattern */
-function clause decode (0b010010 @ 0b00100 @ 0b00000 @ 0b00000 @ rt : regno @ 0b000 @ 0b100) = Some(CSetCause(rt))
-function clause decode (0b010010 @ 0b00100 @ cd : regno @ cb : regno @ rt : regno @ 0b000 @ 0b000) = Some(CAndPerm(cd, cb, rt))
-function clause decode (0b010010 @ 0b01100 @ rd : regno @ cb : regno @ ct : regno @ 0b000 @ 0b000) = Some(CToPtr(rd, cb, ct))
+function clause decode (0b010010 @ 0b01101 @ rd : IntRegEnc @ cb : CapRegEnc @ 0b00000000 @ 0b010) = Some(CGetOffset(rd, cb)) /* NB encoding does not follow pattern */
+function clause decode (0b010010 @ 0b00100 @ 0b00000 @ 0b00000 @ rt : IntRegEnc @ 0b000 @ 0b100) = Some(CSetCause(rt))
+function clause decode (0b010010 @ 0b00100 @ cd : CapRegEnc @ cb : CapRegEnc @ rt : IntRegEnc @ 0b000 @ 0b000) = Some(CAndPerm(cd, cb, rt))
+function clause decode (0b010010 @ 0b01100 @ rd : IntRegEnc @ cb : CapRegEnc @ ct : CapRegOrDDCEnc @ 0b000 @ 0b000) = Some(CToPtr(rd, cb, ct))
 
-function clause decode (0b010010 @ 0b01110 @ rd : regno @ cb : regno @ ct : regno @ 0b000 @ 0b000) = Some(CPtrCmp(rd, cb, ct, CEQ))
-function clause decode (0b010010 @ 0b01110 @ rd : regno @ cb : regno @ ct : regno @ 0b000 @ 0b001) = Some(CPtrCmp(rd, cb, ct, CNE))
-function clause decode (0b010010 @ 0b01110 @ rd : regno @ cb : regno @ ct : regno @ 0b000 @ 0b010) = Some(CPtrCmp(rd, cb, ct, CLT))
-function clause decode (0b010010 @ 0b01110 @ rd : regno @ cb : regno @ ct : regno @ 0b000 @ 0b011) = Some(CPtrCmp(rd, cb, ct, CLE))
-function clause decode (0b010010 @ 0b01110 @ rd : regno @ cb : regno @ ct : regno @ 0b000 @ 0b100) = Some(CPtrCmp(rd, cb, ct, CLTU))
-function clause decode (0b010010 @ 0b01110 @ rd : regno @ cb : regno @ ct : regno @ 0b000 @ 0b101) = Some(CPtrCmp(rd, cb, ct, CLEU))
-function clause decode (0b010010 @ 0b01110 @ rd : regno @ cb : regno @ ct : regno @ 0b000 @ 0b110) = Some(CPtrCmp(rd, cb, ct, CEXEQ))
-function clause decode (0b010010 @ 0b01110 @ rd : regno @ cb : regno @ ct : regno @ 0b000 @ 0b111) = Some(CPtrCmp(rd, cb, ct, CNEXEQ))
-function clause decode (0b010010 @ 0b01101 @ cd : regno @ cb : regno @ rt : regno @ 0b000 @ 0b000) = Some(CIncOffset(cd, cb, rt))
-function clause decode (0b010010 @ 0b01101 @ cd : regno @ cb : regno @ rt : regno @ 0b000 @ 0b001) = Some(CSetOffset(cd, cb, rt))
-function clause decode (0b010010 @ 0b00001 @ cd : regno @ cb : regno @ rt : regno @ 0b000000)      = Some(CSetBounds(cd, cb, rt))
+function clause decode (0b010010 @ 0b01110 @ rd : IntRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b000 @ 0b000) = Some(CPtrCmp(rd, cb, ct, CEQ))
+function clause decode (0b010010 @ 0b01110 @ rd : IntRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b000 @ 0b001) = Some(CPtrCmp(rd, cb, ct, CNE))
+function clause decode (0b010010 @ 0b01110 @ rd : IntRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b000 @ 0b010) = Some(CPtrCmp(rd, cb, ct, CLT))
+function clause decode (0b010010 @ 0b01110 @ rd : IntRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b000 @ 0b011) = Some(CPtrCmp(rd, cb, ct, CLE))
+function clause decode (0b010010 @ 0b01110 @ rd : IntRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b000 @ 0b100) = Some(CPtrCmp(rd, cb, ct, CLTU))
+function clause decode (0b010010 @ 0b01110 @ rd : IntRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b000 @ 0b101) = Some(CPtrCmp(rd, cb, ct, CLEU))
+function clause decode (0b010010 @ 0b01110 @ rd : IntRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b000 @ 0b110) = Some(CPtrCmp(rd, cb, ct, CEXEQ))
+function clause decode (0b010010 @ 0b01110 @ rd : IntRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b000 @ 0b111) = Some(CPtrCmp(rd, cb, ct, CNEXEQ))
+function clause decode (0b010010 @ 0b01101 @ cd : CapRegEnc @ cb : CapRegEnc @ rt : IntRegEnc @ 0b000 @ 0b000) = Some(CIncOffset(cd, cb, rt))
+function clause decode (0b010010 @ 0b01101 @ cd : CapRegEnc @ cb : CapRegEnc @ rt : IntRegEnc @ 0b000 @ 0b001) = Some(CSetOffset(cd, cb, rt))
+function clause decode (0b010010 @ 0b00001 @ cd : CapRegEnc @ cb : CapRegEnc @ rt : IntRegEnc @ 0b000000)      = Some(CSetBounds(cd, cb, rt))
 
-function clause decode (0b010010 @ 0b00100 @ cd : regno @ cb : regno @ 0b00000 @ 0b000@ 0b101)    = Some(CClearTag(cd, cb))
-function clause decode (0b010010 @ 0b00100 @ cd : regno @ cb : regno @ rt : regno @ 0b000@ 0b111) = Some(CFromPtr(cd, cb, rt))
-function clause decode (0b010010 @ 0b01011 @ cs : regno @ 0b00000 @ rt : regno @ 0b000@ 0b000) = Some(CCheckPerm(cs, rt))
-function clause decode (0b010010 @ 0b01011 @ cs : regno @ cb : regno @ 0b00000 @ 0b000@ 0b001) = Some(CCheckType(cs, cb))
-function clause decode (0b010010 @ 0b00010 @ cd : regno @ cs : regno @ ct : regno @ 0b000@ 0b000) = Some(CSeal(cd, cs, ct))
-function clause decode (0b010010 @ 0b00011 @ cd : regno @ cs : regno @ ct : regno @ 0b000@ 0b000) = Some(CUnseal(cd, cs, ct))
-function clause decode (0b010010 @ 0b00111 @ cd : regno @ cb : regno @ 0b00000 @ 0b000000) = Some(CJALR(cd, cb, true)) /* CJALR */
-function clause decode (0b010010 @ 0b01000 @ 0b00000    @ cb : regno @ 0b00000 @ 0b000000) = Some(CJALR(0b00000, cb, false)) /* CJR */
+function clause decode (0b010010 @ 0b00100 @ cd : CapRegEnc @ cb : CapRegEnc @ 0b00000 @ 0b000@ 0b101)    = Some(CClearTag(cd, cb))
+function clause decode (0b010010 @ 0b00100 @ cd : CapRegEnc @ cb : CapRegEnc @ rt : IntRegEnc @ 0b000@ 0b111) = Some(CFromPtr(cd, cb, rt))
+function clause decode (0b010010 @ 0b01011 @ cs : CapRegEnc @ 0b00000 @ rt : IntRegEnc @ 0b000@ 0b000) = Some(CCheckPerm(cs, rt))
+function clause decode (0b010010 @ 0b01011 @ cs : CapRegEnc @ cb : CapRegEnc @ 0b00000 @ 0b000@ 0b001) = Some(CCheckType(cs, cb))
+function clause decode (0b010010 @ 0b00010 @ cd : CapRegEnc @ cs : CapRegEnc @ ct : CapRegEnc @ 0b000@ 0b000) = Some(CSeal(cd, cs, ct))
+function clause decode (0b010010 @ 0b00011 @ cd : CapRegEnc @ cs : CapRegEnc @ ct : CapRegEnc @ 0b000@ 0b000) = Some(CUnseal(cd, cs, ct))
+function clause decode (0b010010 @ 0b00111 @ cd : CapRegEnc @ cb : CapRegEnc @ 0b00000 @ 0b000000) = Some(CJALR(cd, cb, true)) /* CJALR */
+function clause decode (0b010010 @ 0b01000 @ 0b00000    @ cb : CapRegEnc @ 0b00000 @ 0b000000) = Some(CJALR(0b00000, cb, false)) /* CJR */
 
 
 /* 
@@ -1623,144 +1655,147 @@ fields are re-used as additional function codes.
 */
 
 /* One arg */
-function clause decode (0b010010 @ 0b00000 @ rd : regno @    0b00001 @    0b11111 @ 0b111111) = Some(CGetCause(rd))
-function clause decode (0b010010 @ 0b00000 @ rs : regno @    0b00010 @    0b11111 @ 0b111111) = Some(CSetCause(rs))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @    0b00000 @    0b11111 @ 0b111111) = Some(CGetPCC(cd))
-function clause decode (0b010010 @ 0b00000 @ cb : regno @    0b00011 @    0b11111 @ 0b111111) = Some(CJALR(0b00000, cb, false)) /* CJR */
-function clause decode (0b010010 @ 0b00000 @ rd : regno @    0b00100 @    0b11111 @ 0b111111) = Some(CGetCID(rd))
-function clause decode (0b010010 @ 0b00000 @ cb : regno @    0b00101 @    0b11111 @ 0b111111) = Some(CSetCID(cb))
-function clause decode (0b010010 @ 0b00000 @ cb : regno @    0b11000 @    0b11111 @ 0b111111) = Some(CClearTags(cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @    0b00001 @    0b11111 @ 0b111111) = Some(CGetCause(rd))
+function clause decode (0b010010 @ 0b00000 @ rs : IntRegEnc @    0b00010 @    0b11111 @ 0b111111) = Some(CSetCause(rs))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @    0b00000 @    0b11111 @ 0b111111) = Some(CGetPCC(cd))
+function clause decode (0b010010 @ 0b00000 @ cb : CapRegEnc @    0b00011 @    0b11111 @ 0b111111) = Some(CJALR(0b00000, cb, false)) /* CJR */
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @    0b00100 @    0b11111 @ 0b111111) = Some(CGetCID(rd))
+function clause decode (0b010010 @ 0b00000 @ cb : CapRegEnc @    0b00101 @    0b11111 @ 0b111111) = Some(CSetCID(cb))
+
+function clause decode (0b010010 @ 0b00000 @ cb : CapRegOrDDCEnc @    0b11000 @    0b11111 @ 0b111111) = Some(CClearTags(cb))
 
 /* Two arg */
-function clause decode (0b010010 @ 0b00000 @ cs : regno @ rt : regno @    0b01000 @ 0b111111) = Some(CCheckPerm(cs, rt))
-function clause decode (0b010010 @ 0b00000 @ cs : regno @ cb : regno @    0b01001 @ 0b111111) = Some(CCheckType(cs, cb))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @    0b01011 @ 0b111111) = Some(CClearTag(cd, cb))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @    0b01010 @ 0b111111) = Some(CMove(cd, cs)) /* CMOVE */
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @    0b01100 @ 0b111111) = Some(CJALR(cd, cb, true)) /* CJALR */
+function clause decode (0b010010 @ 0b00000 @ cs : CapRegEnc @ rt : IntRegEnc @    0b01000 @ 0b111111) = Some(CCheckPerm(cs, rt))
+function clause decode (0b010010 @ 0b00000 @ cs : CapRegEnc @ cb : CapRegEnc @    0b01001 @ 0b111111) = Some(CCheckType(cs, cb))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegEnc @    0b01011 @ 0b111111) = Some(CClearTag(cd, cb))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @    0b01010 @ 0b111111) = Some(CMove(cd, cs)) /* CMOVE */
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegEnc @    0b01100 @ 0b111111) = Some(CJALR(cd, cb, true)) /* CJALR */
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegEnc @    0b11101 @ 0b111111) = Some(CSealEntry(cd, cb))
 
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @    0b11110 @ 0b111111) = Some(CLoadTags(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @    0b11110 @ 0b111111) = Some(CLoadTags(rd, cb))
 
 function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @    0b11011 @ 0b111111) = Some(CUninit(cd, cb))
 
 /* Capability Inspection */
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @    0b00000 @ 0b111111) = Some(CGetPerm(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @    0b00001 @ 0b111111) = Some(CGetType(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @    0b00010 @ 0b111111) = Some(CGetBase(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @    0b00011 @ 0b111111) = Some(CGetLen(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @    0b00100 @ 0b111111) = Some(CGetTag(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @    0b00101 @ 0b111111) = Some(CGetSealed(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @    0b00110 @ 0b111111) = Some(CGetOffset(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ rs : regno @    0b00111 @ 0b111111) = Some(CGetPCCSetOffset(cd, rs))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @    0b00000 @ 0b111111) = Some(CGetPerm(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @    0b00001 @ 0b111111) = Some(CGetType(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @    0b00010 @ 0b111111) = Some(CGetBase(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @    0b00011 @ 0b111111) = Some(CGetLen(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @    0b00100 @ 0b111111) = Some(CGetTag(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @    0b00101 @ 0b111111) = Some(CGetSealed(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @    0b00110 @ 0b111111) = Some(CGetOffset(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ rs : CapRegEnc @    0b00111 @ 0b111111) = Some(CGetPCCSetOffset(cd, rs))
 
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ sel : regno @   0b01101 @ 0b111111) = Some(CReadHwr(cd, sel))
-function clause decode (0b010010 @ 0b00000 @ cb : regno @ sel : regno @   0b01110 @ 0b111111) = Some(CWriteHwr(cb, sel))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ sel : CapHwrEnc @   0b01101 @ 0b111111) = Some(CReadHwr(cd, sel))
+function clause decode (0b010010 @ 0b00000 @ cb : CapRegEnc @ sel : CapHwrEnc @   0b01110 @ 0b111111) = Some(CWriteHwr(cb, sel))
 
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @   0b01111 @ 0b111111) = Some(CGetAddr(rd, cb))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @   0b10010 @ 0b111111) = Some(CGetFlags(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @   0b01111 @ 0b111111) = Some(CGetAddr(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @   0b10010 @ 0b111111) = Some(CGetFlags(rd, cb))
 
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @   0b10011 @ 0b111111) = Some(CGetUninit(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @   0b10011 @ 0b111111) = Some(CGetPCCIncOffset(rd, cb))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @   0b10100 @ 0b111111) = Some(CGetPCCSetAddr(rd, cb))
 
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @   0b10101 @ 0b111111) = Some(CGetUninit(rd, cb))
 
-function clause decode (0b010010 @ 0b00000 @ rt : regno @ rs : regno @   0b10000 @ 0b111111) = Some(CRAP(rt, rs))
-function clause decode (0b010010 @ 0b00000 @ rt : regno @ rs : regno @   0b10001 @ 0b111111) = Some(CRAM(rt, rs))
+function clause decode (0b010010 @ 0b00000 @ rt : IntRegEnc @ rs : IntRegEnc @   0b10000 @ 0b111111) = Some(CRAP(rt, rs))
+function clause decode (0b010010 @ 0b00000 @ rt : IntRegEnc @ rs : IntRegEnc @   0b10001 @ 0b111111) = Some(CRAM(rt, rs))
 
 /* Three operand */
 
 /* Capability Modification */
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ ct : regno @ 0b001011) = Some(CSeal(cd, cs, ct))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ ct : regno @ 0b001100) = Some(CUnseal(cd, cs, ct))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ rt : regno @ 0b001101) = Some(CAndPerm(cd, cs, rt))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ rt : regno @ 0b001111) = Some(CSetOffset(cd, cs, rt))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ rt : regno @ 0b001000) = Some(CSetBounds(cd, cs, rt))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ rt : regno @ 0b001001) = Some(CSetBoundsExact(cd, cs, rt))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ rt : regno @ 0b001110) = Some(CSetFlags(cd, cs, rt))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ ct : CapRegEnc @ 0b001011) = Some(CSeal(cd, cs, ct))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ ct : CapRegEnc @ 0b001100) = Some(CUnseal(cd, cs, ct))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ rt : IntRegEnc @ 0b001101) = Some(CAndPerm(cd, cs, rt))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ rt : IntRegEnc @ 0b001111) = Some(CSetOffset(cd, cs, rt))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ rt : IntRegEnc @ 0b001000) = Some(CSetBounds(cd, cs, rt))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ rt : IntRegEnc @ 0b001001) = Some(CSetBoundsExact(cd, cs, rt))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ rt : IntRegEnc @ 0b001110) = Some(CSetFlags(cd, cs, rt))
 
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @ rt : regno @ 0b010001) = Some(CIncOffset(cd, cb, rt))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @ ct : regno @ 0b011101) = Some(CBuildCap(cd, cb, ct))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @ ct : regno @ 0b011110) = Some(CCopyType(cd, cb, ct))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ ct : regno @ 0b011111) = Some(CCSeal(cd, cs, ct))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegEnc @ rt : IntRegEnc @ 0b010001) = Some(CIncOffset(cd, cb, rt))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegOrDDCEnc @ ct : CapRegEnc @ 0b011101) = Some(CBuildCap(cd, cb, ct))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b011110) = Some(CCopyType(cd, cb, ct))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ ct : CapRegEnc @ 0b011111) = Some(CCSeal(cd, cs, ct))
 
 /* Pointer Arithmetic */
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ ct : regno @ 0b010010) = Some(CToPtr(rd, cb, ct))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @ rs : regno @ 0b010011) = Some(CFromPtr(cd, cb, rs))
-function clause decode (0b010010 @ 0b00000 @ rt : regno @ cb : regno @ cs : regno @ 0b001010) = Some(CSub(rt, cb, cs))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ rs : regno @ 0b011011) = Some(CMOVX(cd, cs, rs, false)) /* CMOVZ */
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ rs : regno @ 0b011100) = Some(CMOVX(cd, cs, rs, true))  /* CMOVN */
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ rs : regno @ 0b100010) = Some(CSetAddr(cd, cs, rs))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cs : regno @ rs : regno @ 0b100011) = Some(CGetAndAddr(rd, cs, rs))
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ rs : regno @ 0b100100) = Some(CAndAddr(cd, cs, rs))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b010010) = Some(CToPtr(rd, cb, ct))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegOrDDCEnc @ rs : IntRegEnc @ 0b010011) = Some(CFromPtr(cd, cb, rs))
+function clause decode (0b010010 @ 0b00000 @ rt : IntRegEnc @ cb : CapRegEnc @ cs : CapRegEnc @ 0b001010) = Some(CSub(rt, cb, cs))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ rs : IntRegEnc @ 0b011011) = Some(CMOVX(cd, cs, rs, false)) /* CMOVZ */
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ rs : IntRegEnc @ 0b011100) = Some(CMOVX(cd, cs, rs, true))  /* CMOVN */
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ rs : IntRegEnc @ 0b100010) = Some(CSetAddr(cd, cs, rs))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cs : CapRegEnc @ rs : IntRegEnc @ 0b100011) = Some(CGetAndAddr(rd, cs, rs))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ rs : IntRegEnc @ 0b100100) = Some(CAndAddr(cd, cs, rs))
 
 
 /* Pointer Comparison */
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ cs : regno @ 0b010100) = Some(CPtrCmp(rd, cb, cs, CEQ))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ cs : regno @ 0b010101) = Some(CPtrCmp(rd, cb, cs, CNE))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ cs : regno @ 0b010110) = Some(CPtrCmp(rd, cb, cs, CLT))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ cs : regno @ 0b010111) = Some(CPtrCmp(rd, cb, cs, CLE))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ cs : regno @ 0b011000) = Some(CPtrCmp(rd, cb, cs, CLTU))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ cs : regno @ 0b011001) = Some(CPtrCmp(rd, cb, cs, CLEU))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ cs : regno @ 0b011010) = Some(CPtrCmp(rd, cb, cs, CEXEQ))
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ cs : regno @ 0b100001) = Some(CPtrCmp(rd, cb, cs, CNEXEQ))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ cs : CapRegEnc @ 0b010100) = Some(CPtrCmp(rd, cb, cs, CEQ))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ cs : CapRegEnc @ 0b010101) = Some(CPtrCmp(rd, cb, cs, CNE))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ cs : CapRegEnc @ 0b010110) = Some(CPtrCmp(rd, cb, cs, CLT))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ cs : CapRegEnc @ 0b010111) = Some(CPtrCmp(rd, cb, cs, CLE))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ cs : CapRegEnc @ 0b011000) = Some(CPtrCmp(rd, cb, cs, CLTU))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ cs : CapRegEnc @ 0b011001) = Some(CPtrCmp(rd, cb, cs, CLEU))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ cs : CapRegEnc @ 0b011010) = Some(CPtrCmp(rd, cb, cs, CEXEQ))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ cs : CapRegEnc @ 0b100001) = Some(CPtrCmp(rd, cb, cs, CNEXEQ))
 
-function clause decode (0b010010 @ 0b00000 @ rd : regno @ cb : regno @ ct : regno @ 0b100000) = Some(CTestSubset(rd, cb, ct))
+function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ ct : CapRegEnc @ 0b100000) = Some(CTestSubset(rd, cb, ct))
 
 /* Special-purpose */
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cs : regno @ rs : regno @ 0b111000) = Some(CLCNT(cd, cs, rs))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegOrDDCEnc @ rs : IntRegEnc @ 0b111000) = Some(CLCNT(cd, cs, rs))
 
-function clause decode (0b010010 @ 0b01001 @ cd : regno @ imm : bits(16)) = Some(CBX(cd, imm, true))  /* CBTU */
-function clause decode (0b010010 @ 0b01010 @ cd : regno @ imm : bits(16)) = Some(CBX(cd, imm, false)) /* CBTS */
-function clause decode (0b010010 @ 0b10001 @ cd : regno @ imm : bits(16)) = Some(CBZ(cd, imm, false)) /* CBEZ */
-function clause decode (0b010010 @ 0b10010 @ cd : regno @ imm : bits(16)) = Some(CBZ(cd, imm, true))  /* CBNZ */
+function clause decode (0b010010 @ 0b01001 @ cd : CapRegEnc @ imm : bits(16)) = Some(CBX(cd, imm, true))  /* CBTU */
+function clause decode (0b010010 @ 0b01010 @ cd : CapRegEnc @ imm : bits(16)) = Some(CBX(cd, imm, false)) /* CBTS */
+function clause decode (0b010010 @ 0b10001 @ cd : CapRegEnc @ imm : bits(16)) = Some(CBZ(cd, imm, false)) /* CBEZ */
+function clause decode (0b010010 @ 0b10010 @ cd : CapRegEnc @ imm : bits(16)) = Some(CBZ(cd, imm, true))  /* CBNZ */
 
 function clause decode (0b010010 @ 0b00101 @    0b00000 @    0b00000 @ 0b11111111111) = Some(CReturn())
-function clause decode (0b010010 @ 0b00101 @ cs : regno @ cb : regno @ selector : bits(11)) = Some(CCall(cs, cb, selector))
+function clause decode (0b010010 @ 0b00101 @ cs : CapRegEnc @ cb : CapRegEnc @ selector : bits(11)) = Some(CCall(cs, cb, selector))
 
 function clause decode (0b010010 @ 0b01111 @ 0b00000 @ imm : bits(16)) = Some(ClearRegs(GPLo, imm))
 function clause decode (0b010010 @ 0b01111 @ 0b00001 @ imm : bits(16)) = Some(ClearRegs(GPHi, imm))
 function clause decode (0b010010 @ 0b01111 @ 0b00010 @ imm : bits(16)) = Some(ClearRegs(CLo,  imm))
 function clause decode (0b010010 @ 0b01111 @ 0b00011 @ imm : bits(16)) = Some(ClearRegs(CHi,  imm))
 
-function clause decode (0b010010 @ 0b10011 @ cd : regno @ cb : regno @ imm : bits(11)) = Some(CIncOffsetImmediate(cd, cb, imm))
-function clause decode (0b010010 @ 0b10100 @ cd : regno @ cb : regno @ imm : bits(11)) = Some(CSetBoundsImmediate(cd, cb, imm))
+function clause decode (0b010010 @ 0b10011 @ cd : CapRegEnc @ cb : CapRegEnc @ imm : bits(11)) = Some(CIncOffsetImmediate(cd, cb, imm))
+function clause decode (0b010010 @ 0b10100 @ cd : CapRegEnc @ cb : CapRegEnc @ imm : bits(11)) = Some(CSetBoundsImmediate(cd, cb, imm))
 
-function clause decode (0b110010 @ rd : regno @ cb : regno@ rt : regno @ offset : bits(8) @ 0b0 @ 0b00) = Some(CLoad(rd, cb, rt, offset, false, B)) /* CLBU */
-function clause decode (0b110010 @ rd : regno @ cb : regno@ rt : regno @ offset : bits(8) @ 0b1 @ 0b00) = Some(CLoad(rd, cb, rt, offset, true,  B)) /* CLB */
-function clause decode (0b110010 @ rd : regno @ cb : regno@ rt : regno @ offset : bits(8) @ 0b0 @ 0b01) = Some(CLoad(rd, cb, rt, offset, false, H)) /* CLHU */
-function clause decode (0b110010 @ rd : regno @ cb : regno@ rt : regno @ offset : bits(8) @ 0b1 @ 0b01) = Some(CLoad(rd, cb, rt, offset, true,  H)) /* CLH */
-function clause decode (0b110010 @ rd : regno @ cb : regno@ rt : regno @ offset : bits(8) @ 0b0 @ 0b10) = Some(CLoad(rd, cb, rt, offset, false, W)) /* CLWU */
-function clause decode (0b110010 @ rd : regno @ cb : regno@ rt : regno @ offset : bits(8) @ 0b1 @ 0b10) = Some(CLoad(rd, cb, rt, offset, true,  W)) /* CLW */
-function clause decode (0b110010 @ rd : regno @ cb : regno@ rt : regno @ offset : bits(8) @ 0b0 @ 0b11) = Some(CLoad(rd, cb, rt, offset, false, D)) /* CLD */
+function clause decode (0b110010 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b0 @ 0b00) = Some(CLoad(rd, cb, rt, offset, false, B)) /* CLBU */
+function clause decode (0b110010 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b1 @ 0b00) = Some(CLoad(rd, cb, rt, offset, true,  B)) /* CLB */
+function clause decode (0b110010 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b0 @ 0b01) = Some(CLoad(rd, cb, rt, offset, false, H)) /* CLHU */
+function clause decode (0b110010 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b1 @ 0b01) = Some(CLoad(rd, cb, rt, offset, true,  H)) /* CLH */
+function clause decode (0b110010 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b0 @ 0b10) = Some(CLoad(rd, cb, rt, offset, false, W)) /* CLWU */
+function clause decode (0b110010 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b1 @ 0b10) = Some(CLoad(rd, cb, rt, offset, true,  W)) /* CLW */
+function clause decode (0b110010 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b0 @ 0b11) = Some(CLoad(rd, cb, rt, offset, false, D)) /* CLD */
 
-function clause decode (0b010010 @ 0b10000 @ rd : regno @ cb : regno @ 0b00000001 @ 0b0 @ 0b00) = Some(CLoadLinked(rd, cb, false, B)) /* CLLBU */
-function clause decode (0b010010 @ 0b10000 @ rd : regno @ cb : regno @ 0b00000001 @ 0b1 @ 0b00) = Some(CLoadLinked(rd, cb, true,  B)) /* CLLB  */
-function clause decode (0b010010 @ 0b10000 @ rd : regno @ cb : regno @ 0b00000001 @ 0b0 @ 0b01) = Some(CLoadLinked(rd, cb, false, H)) /* CLLHU */
-function clause decode (0b010010 @ 0b10000 @ rd : regno @ cb : regno @ 0b00000001 @ 0b1 @ 0b01) = Some(CLoadLinked(rd, cb, true,  H)) /* CLLH  */
-function clause decode (0b010010 @ 0b10000 @ rd : regno @ cb : regno @ 0b00000001 @ 0b0 @ 0b10) = Some(CLoadLinked(rd, cb, false, W)) /* CLLWU */
-function clause decode (0b010010 @ 0b10000 @ rd : regno @ cb : regno @ 0b00000001 @ 0b1 @ 0b10) = Some(CLoadLinked(rd, cb, true,  W)) /* CLLW  */
-function clause decode (0b010010 @ 0b10000 @ rd : regno @ cb : regno @ 0b00000001 @ 0b0 @ 0b11) = Some(CLoadLinked(rd, cb, false, D)) /* CLLD  */
+function clause decode (0b010010 @ 0b10000 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ 0b00000001 @ 0b0 @ 0b00) = Some(CLoadLinked(rd, cb, false, B)) /* CLLBU */
+function clause decode (0b010010 @ 0b10000 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ 0b00000001 @ 0b1 @ 0b00) = Some(CLoadLinked(rd, cb, true,  B)) /* CLLB  */
+function clause decode (0b010010 @ 0b10000 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ 0b00000001 @ 0b0 @ 0b01) = Some(CLoadLinked(rd, cb, false, H)) /* CLLHU */
+function clause decode (0b010010 @ 0b10000 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ 0b00000001 @ 0b1 @ 0b01) = Some(CLoadLinked(rd, cb, true,  H)) /* CLLH  */
+function clause decode (0b010010 @ 0b10000 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ 0b00000001 @ 0b0 @ 0b10) = Some(CLoadLinked(rd, cb, false, W)) /* CLLWU */
+function clause decode (0b010010 @ 0b10000 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ 0b00000001 @ 0b1 @ 0b10) = Some(CLoadLinked(rd, cb, true,  W)) /* CLLW  */
+function clause decode (0b010010 @ 0b10000 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ 0b00000001 @ 0b0 @ 0b11) = Some(CLoadLinked(rd, cb, false, D)) /* CLLD  */
 
-function clause decode (0b111010 @ rs : regno @ cb : regno@ rt : regno @ offset : bits(8) @ 0b0 @ 0b00) = Some(CStore(rs, cb, rt, offset, B)) /* CSB */
-function clause decode (0b111010 @ rs : regno @ cb : regno@ rt : regno @ offset : bits(8) @ 0b0 @ 0b01) = Some(CStore(rs, cb, rt, offset, H)) /* CSH */
-function clause decode (0b111010 @ rs : regno @ cb : regno@ rt : regno @ offset : bits(8) @ 0b0 @ 0b10) = Some(CStore(rs, cb, rt, offset, W)) /* CSW */
-function clause decode (0b111010 @ rs : regno @ cb : regno@ rt : regno @ offset : bits(8) @ 0b0 @ 0b11) = Some(CStore(rs, cb, rt, offset, D)) /* CSD */
+function clause decode (0b111010 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b0 @ 0b00) = Some(CStore(rs, cb, rt, offset, B)) /* CSB */
+function clause decode (0b111010 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b0 @ 0b01) = Some(CStore(rs, cb, rt, offset, H)) /* CSH */
+function clause decode (0b111010 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b0 @ 0b10) = Some(CStore(rs, cb, rt, offset, W)) /* CSW */
+function clause decode (0b111010 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b0 @ 0b11) = Some(CStore(rs, cb, rt, offset, D)) /* CSD */
 
-function clause decode (0b111011 @ ct : regno @ rs : regno@ cb : regno @ offset : bits(8) @ 0b0 @ 0b00) = Some(UCStore(ct, rs, cb, offset, B)) /* UCSB */
-function clause decode (0b111011 @ ct : regno @ rs : regno@ cb : regno @ offset : bits(8) @ 0b0 @ 0b01) = Some(UCStore(ct, rs, cb, offset, H)) /* UCSH */
-function clause decode (0b111011 @ ct : regno @ rs : regno@ cb : regno @ offset : bits(8) @ 0b0 @ 0b10) = Some(UCStore(ct, rs, cb, offset, W)) /* UCSW */
-function clause decode (0b111011 @ ct : regno @ rs : regno@ cb : regno @ offset : bits(8) @ 0b0 @ 0b11) = Some(UCStore(ct, rs, cb, offset, D)) /* UCSD */
+function clause decode (0b111011 @ ct : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b00) = Some(UCStore(ct, rs, cb, offset, B)) /* UCSB */
+function clause decode (0b111011 @ ct : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b01) = Some(UCStore(ct, rs, cb, offset, H)) /* UCSH */
+function clause decode (0b111011 @ ct : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b10) = Some(UCStore(ct, rs, cb, offset, W)) /* UCSW */
+function clause decode (0b111011 @ ct : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b11) = Some(UCStore(ct, rs, cb, offset, D)) /* UCSD */
 
-function clause decode (0b111100 @ ct : regno @ cs : regno@ cb : regno @ offset : bits(11)) = Some(UCStoreCap(ct, cs, cb, offset))
+function clause decode (0b111100 @ ct : CapRegEnc @ cs : CapRegEnc @ cb : CapRegEnc @ offset : bits(11)) = Some(UCStoreCap(ct, cs, cb, offset))
 
-function clause decode (0b010010 @ 0b10000 @ rs : regno @ cb : regno @ rd : regno @ 0b0000 @ 0b00) = Some(CStoreConditional(rs, cb, rd, B)) /* CSCB */
-function clause decode (0b010010 @ 0b10000 @ rs : regno @ cb : regno @ rd : regno @ 0b0000 @ 0b01) = Some(CStoreConditional(rs, cb, rd, H)) /* CSCH */
-function clause decode (0b010010 @ 0b10000 @ rs : regno @ cb : regno @ rd : regno @ 0b0000 @ 0b10) = Some(CStoreConditional(rs, cb, rd, W)) /* CSCW */
-function clause decode (0b010010 @ 0b10000 @ rs : regno @ cb : regno @ rd : regno @ 0b0000 @ 0b11) = Some(CStoreConditional(rs, cb, rd, D)) /* CSCD */
+function clause decode (0b010010 @ 0b10000 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rd : IntRegEnc @ 0b0000 @ 0b00) = Some(CStoreConditional(rs, cb, rd, B)) /* CSCB */
+function clause decode (0b010010 @ 0b10000 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rd : IntRegEnc @ 0b0000 @ 0b01) = Some(CStoreConditional(rs, cb, rd, H)) /* CSCH */
+function clause decode (0b010010 @ 0b10000 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rd : IntRegEnc @ 0b0000 @ 0b10) = Some(CStoreConditional(rs, cb, rd, W)) /* CSCW */
+function clause decode (0b010010 @ 0b10000 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rd : IntRegEnc @ 0b0000 @ 0b11) = Some(CStoreConditional(rs, cb, rd, D)) /* CSCD */
 
-function clause decode (0b111110 @ cs : regno @ cb : regno@ rt : regno @ offset : bits(11)) = Some(CSC(cs, cb, rt, offset))
-function clause decode (0b010010 @ 0b10000 @ cs : regno @ cb : regno@ rd : regno @ 0b00 @ 0b0111) = Some(CSCC(cs, cb, rd))
+function clause decode (0b111110 @ cs : CapRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(11)) = Some(CSC(cs, cb, rt, offset))
+function clause decode (0b010010 @ 0b10000 @ cs : CapRegEnc @ cb : CapRegOrDDCEnc @ rd : IntRegEnc @ 0b00 @ 0b0111) = Some(CSCC(cs, cb, rd))
 
-function clause decode (0b110110 @ cd : regno @ cb : regno @ rt : regno @ offset : bits(11)) = Some(CLC(cd, cb, rt, offset))
-function clause decode (0b010010 @ 0b10000 @ cd : regno @ cb : regno@ 0b0000000 @ 0b1111) = Some(CLLC(cd, cb))
-function clause decode (0b010010 @ 0b10000 @ cd : regno @ cb : regno@ 0b0000001 @ 0b1111) = Some(CCLC(cd, cb))
-function clause decode (0b011101 @ cd : regno @ cb : regno @ offset : bits(16)) = Some(CLCBI(cd, cb, offset))
+function clause decode (0b110110 @ cd : CapRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(11)) = Some(CLC(cd, cb, rt, offset))
+function clause decode (0b010010 @ 0b10000 @ cd : CapRegEnc @ cb : CapRegOrDDCEnc @ 0b0000000 @ 0b1111) = Some(CLLC(cd, cb))
+function clause decode (0b011101 @ cd : CapRegEnc @ cb : CapRegOrDDCEnc @ offset : bits(16)) = Some(CLCBI(cd, cb, offset))
 
-function clause decode (0b010010 @ 0b00100 @ rt : regno @ 0x0006) = Some(C2Dump(rt))
+function clause decode (0b010010 @ 0b00100 @ rt : IntRegEnc @ 0x0006) = Some(C2Dump(rt))
