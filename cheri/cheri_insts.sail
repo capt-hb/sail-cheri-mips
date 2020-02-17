@@ -1309,19 +1309,20 @@ function clause execute (UCStoreCap(ct, cs, cb, offset)) =
       SignalExceptionBadAddr(AdES, vAddr64)
     else
     {
-      let (pAddr, noStoreCap) = TLBTranslateC(vAddr64, StoreData);
-      if cs_val.tag & noStoreCap then
-        raise_c2_exception(CapEx_TLBNoStoreCap, cs)
-      else {
-	let incr : bits(64) = zero_extend(bitone);
-	if offset == zeros(11) then { // uninit: if offset = 0x00 (write on cursor), inc cursor
-	    let (ign, newCap) = incCapOffset(cb_val, incr);
-	    writeCapReg(ct, newCap);
-	    MEMw_tagged(pAddr, cap_size, cs_val.tag, capToMemBits(cs_val));
-	} else {
-	    writeCapReg(ct, cb_val);
-	};
-      }
+      let (pAddr, macr) = TLBTranslateC(vAddr64, StoreData);
+      let mtag : bool = match (if cs_val.tag == false then Unrestricted else macr) {
+        Unrestricted => cs_val.tag,
+        Clear => false,
+        Trap  => raise_c2_exception(CapEx_TLBNoStoreCap, cs)
+      };
+      let incr : bits(64) = zero_extend(bitone);
+      if offset == zeros(11) then { // uninit: if offset = 0x00 (write on cursor), inc cursor
+	let (ign, newCap) = incCapOffset(cb_val, incr);
+	writeCapReg(ct, newCap);
+      } else {
+	writeCapReg(ct, cb_val);
+      };
+      MEMw_tagged(pAddr, cap_size, mtag, capToMemBits(cs_val))
     }
   }
 }
