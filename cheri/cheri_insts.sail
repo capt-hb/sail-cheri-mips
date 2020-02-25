@@ -424,7 +424,7 @@ function clause execute (CIncOffset(cd, cb, rt)) =
   checkCP2usable();
   let cb_val = readCapReg(cb);
   let rt_val = rGPR(rt);
-  if cb_val.tag & cb_val.sealed & (rt_val != 0x0000000000000000) then
+  if cb_val.tag & cb_val.sealed & (rt != 0b00000) then
     raise_c2_exception(CapEx_SealViolation, cb)
   else if cb_val.tag & cb_val.uninit & (signed(rt_val) > 0) & (not (capAddrReachedEnd(cb_val))) then // uninit: don't allow pos inc (unless address is above end)
     raise_c2_exception(CapEx_UninitViolation, cb)
