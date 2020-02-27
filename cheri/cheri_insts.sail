@@ -1260,8 +1260,8 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
     {
       let pAddr  = TLBTranslate(vAddr64, StoreData);
       let rs_val = rGPR(rs);
-      let incr : bits(64) = zero_extend(bitone);
       if offset == zeros(8) then { // uninit: if offset = 0x00 (write on cursor), inc cursor
+	 let incr : bits(64) = to_bits(64, size);
       	 let (ign, newCap) = incCapOffset(cb_val, incr);
 	 writeCapReg(ct, newCap);
       } else {
@@ -1315,8 +1315,8 @@ function clause execute (UCStoreCap(ct, cs, cb, offset)) =
         Clear => false,
         Trap  => raise_c2_exception(CapEx_TLBNoStoreCap, cs)
       };
-      let incr : bits(64) = zero_extend(bitone);
       if offset == zeros(11) then { // uninit: if offset = 0x00 (write on cursor), inc cursor
+        let incr : bits(64) = to_bits(64, cap_size);
 	let (ign, newCap) = incCapOffset(cb_val, incr);
 	writeCapReg(ct, newCap);
       } else {
