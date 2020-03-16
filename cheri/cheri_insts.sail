@@ -486,7 +486,7 @@ function clause execute (CSetAddr(cd, cb, rt)) =
   let rt_val = rGPR(rt);
   if cb_val.tag & cb_val.sealed then
     raise_c2_exception(CapEx_SealViolation, cb)
-  else if cb_val.tag & cb_val.uninit & (not (zeros(64) == rt_val)) & (cb_val.address <_s rt_val) then // uninit: don't allow setting address higher
+  else if cb_val.tag & cb_val.uninit & (rt_val <_s cb_val.address) then // uninit: don't allow setting address lower
     raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
