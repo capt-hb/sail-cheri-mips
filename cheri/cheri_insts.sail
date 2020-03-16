@@ -426,7 +426,7 @@ function clause execute (CIncOffset(cd, cb, rt)) =
   let rt_val = rGPR(rt);
   if cb_val.tag & cb_val.sealed & (rt != 0b00000) then
     raise_c2_exception(CapEx_SealViolation, cb)
-  else if cb_val.tag & cb_val.uninit & (signed(rt_val) > 0) & (not (capAddrReachedEnd(cb_val))) then // uninit: don't allow pos inc (unless address is above end)
+  else if cb_val.tag & cb_val.uninit & rt_val[63] then // uninit: don't allow lowering cursor
     raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
@@ -446,7 +446,7 @@ function clause execute (CIncOffsetImmediate(cd, cb, imm)) =
   let imm64 : bits(64) = sign_extend(imm);
   if cb_val.tag & cb_val.sealed then
     raise_c2_exception(CapEx_SealViolation, cb)
-  else if cb_val.tag & cb_val.uninit & zeros(64) <_s imm64 & (not (capAddrReachedEnd(cb_val))) then // uninit: don't allow pos inc (unless address is above end)
+  else if cb_val.tag & cb_val.uninit & imm64[63] then // uninit: don't allow lowering cursor
     raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
@@ -466,7 +466,7 @@ function clause execute (CSetOffset(cd, cb, rt)) =
   let rt_val = rGPR(rt);
   if cb_val.tag & cb_val.sealed then
     raise_c2_exception(CapEx_SealViolation, cb)
-  else if cb_val.tag & cb_val.uninit & (signed(rt_val) > 0) & (not (capAddrReachedEnd(cb_val))) then // uninit: don't allow pos inc (unless address is above end)
+  else if cb_val.tag & cb_val.uninit & rt_val[63] then // uninit: don't allow lowering cursor
     raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
@@ -510,7 +510,7 @@ function clause execute (CAndAddr(cd, cb, rt)) =
   {
     let newAddr = cb_val.address & rt_val;
     let (representable, newCap) = setCapAddr(cb_val, newAddr);
-    if cb_val.uninit & (not (zeros(64) == rt_val)) & (cb_val.address <_s rt_val) then // uninit: don't allow setting address higher
+    if cb_val.uninit & (rt_val <_s cb_val.address) then // uninit: don't allow setting address lower
       raise_c2_exception(CapEx_UninitViolation, cb)
     else if representable then
         writeCapReg(cd, newCap)
