@@ -1242,7 +1242,7 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
     raise_c2_exception(CapEx_SealViolation, cb)
   else if not (cb_val.permit_store) then
     raise_c2_exception(CapEx_PermitStoreViolation, cb)
-  else if (offset != zeros(8)) & (not (offset[7])) then // uninit: don't allow writing above cursor
+  else if (offset != zeros(8)) & offset[7] then // uninit: don't allow writing beneath cursor
     raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
@@ -1260,9 +1260,9 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
     {
       let pAddr  = TLBTranslate(vAddr64, StoreData);
       let rs_val = rGPR(rs);
-      if offset == zeros(8) then { // uninit: if offset = 0x00 (write on cursor), inc cursor
-	 let incr : bits(64) = to_bits(64, size);
-      	 let (ign, newCap) = incCapOffset(cb_val, incr);
+      if offset == zeros(8) then { // uninit: if offset = 0x00 (write on cursor), dec cursor
+	 let decr : bits(64) = to_bits(64, negate(size));
+      	 let (ign, newCap) = incCapOffset(cb_val, decr);
 	 writeCapReg(ct, newCap);
       } else {
          writeCapReg(ct, cb_val);
@@ -1294,7 +1294,7 @@ function clause execute (UCStoreCap(ct, cs, cb, offset)) =
     raise_c2_exception(CapEx_PermitStoreCapViolation, cb)
   else if not (cb_val.permit_store_local_cap) & (cs_val.tag) & not (cs_val.global) then
     raise_c2_exception(CapEx_PermitStoreLocalCapViolation, cb)
-  else if (offset != zeros(11)) & (not (offset[10])) then // uninit: don't allow writing above cursor
+  else if (offset != zeros(11)) & offset[10] then // uninit: don't allow writing beneath cursor
     raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
@@ -1315,9 +1315,9 @@ function clause execute (UCStoreCap(ct, cs, cb, offset)) =
         Clear => false,
         Trap  => raise_c2_exception(CapEx_TLBNoStoreCap, cs)
       };
-      if offset == zeros(11) then { // uninit: if offset = 0x00 (write on cursor), inc cursor
-        let incr : bits(64) = to_bits(64, cap_size);
-	let (ign, newCap) = incCapOffset(cb_val, incr);
+      if offset == zeros(11) then { // uninit: if offset = 0x00 (write on cursor), dec cursor
+        let decr : bits(64) = to_bits(64, negate(cap_size));
+	let (ign, newCap) = incCapOffset(cb_val, decr);
 	writeCapReg(ct, newCap);
       } else {
 	writeCapReg(ct, cb_val);
