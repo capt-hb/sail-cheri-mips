@@ -1103,7 +1103,7 @@ function clause execute (CLoad(rd, cb, rt, offset, signext, width)) =
       raise_c2_exception(CapEx_LengthViolation, cb)
     else if vAddr < getCapBase(cb_val) then
       raise_c2_exception(CapEx_LengthViolation, cb)
-    else if cb_val.uninit & vAddr >= cursor then
+    else if cb_val.uninit & vAddr < cursor then
       raise_c2_exception(CapEx_UninitLoadViolation, cb)
     else if not (isAddressAligned(vAddr64, width)) then
       SignalExceptionBadAddr(AdEL, vAddr64)
@@ -1247,7 +1247,13 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
   else
   {
     let size   = wordWidthBytes(width);
-    let cursor = getCapCursor(cb_val);
+    let (ign, newCap) = if offset == zeros(8) then { // update cursor before writing
+       let decr = to_bits(64, negate(size));
+       incCapOffset(cb_val, decr);
+    } else {
+      (true, cb_val);
+    };
+    let cursor = getCapCursor(newCap);
     let vAddr  = (cursor + size * signed(offset)) % pow2(64);
     let vAddr64= to_bits(64, vAddr);
     if (vAddr + size) > getCapTop(cb_val) then
@@ -1260,13 +1266,7 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
     {
       let pAddr  = TLBTranslate(vAddr64, StoreData);
       let rs_val = rGPR(rs);
-      if offset == zeros(8) then { // uninit: if offset = 0x00 (write on cursor), dec cursor
-	 let decr : bits(64) = to_bits(64, negate(size));
-      	 let (ign, newCap) = incCapOffset(cb_val, decr);
-	 writeCapReg(ct, newCap);
-      } else {
-         writeCapReg(ct, cb_val);
-      };
+      writeCapReg(ct, newCap);
       match width
       {
         B  => MEMw_wrapper(pAddr, 1) = rs_val[7..0],
@@ -1298,7 +1298,13 @@ function clause execute (UCStoreCap(ct, cs, cb, offset)) =
     raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
-    let cursor  = getCapCursor(cb_val);
+    let (ign, newCap) = if offset == zeros(11) then { // update cursor before writing
+    	let decr = to_bits(64, negate(cap_size));
+	incCapOffset(cb_val, decr);
+    } else {
+      (true, cb_val);
+    };
+    let cursor  = getCapCursor(newCap);
     let vAddr   = (cursor + 16 * signed(offset)) % pow2(64);
     let vAddr64 = to_bits(64, vAddr);
     if (vAddr + cap_size) > getCapTop(cb_val) then
@@ -1315,13 +1321,7 @@ function clause execute (UCStoreCap(ct, cs, cb, offset)) =
         Clear => false,
         Trap  => raise_c2_exception(CapEx_TLBNoStoreCap, cs)
       };
-      if offset == zeros(11) then { // uninit: if offset = 0x00 (write on cursor), dec cursor
-        let decr : bits(64) = to_bits(64, negate(cap_size));
-	let (ign, newCap) = incCapOffset(cb_val, decr);
-	writeCapReg(ct, newCap);
-      } else {
-	writeCapReg(ct, cb_val);
-      };
+      writeCapReg(ct, newCap);
       MEMw_tagged(pAddr, cap_size, mtag, capToMemBits(cs_val))
     }
   }
