@@ -1242,8 +1242,6 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
     raise_c2_exception(CapEx_SealViolation, cb)
   else if not (cb_val.permit_store) then
     raise_c2_exception(CapEx_PermitStoreViolation, cb)
-  else if (offset != zeros(8)) & offset[7] then // uninit: don't allow writing beneath cursor
-    raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
     let size   = wordWidthBytes(width);
@@ -1294,8 +1292,6 @@ function clause execute (UCStoreCap(ct, cs, cb, offset)) =
     raise_c2_exception(CapEx_PermitStoreCapViolation, cb)
   else if not (cb_val.permit_store_local_cap) & (cs_val.tag) & not (cs_val.global) then
     raise_c2_exception(CapEx_PermitStoreLocalCapViolation, cb)
-  else if (offset != zeros(11)) & offset[10] then // uninit: don't allow writing beneath cursor
-    raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
     let (ign, newCap) = if offset == zeros(11) then { // update cursor before writing
