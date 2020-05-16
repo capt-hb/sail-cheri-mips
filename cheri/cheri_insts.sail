@@ -1467,7 +1467,7 @@ function clause execute (CLC(cd, cb, rt, offset)) =
       raise_c2_exception(CapEx_LengthViolation, cb)
     else if vAddr < getCapBase(cb_val) then
       raise_c2_exception(CapEx_LengthViolation, cb)
-    else if cb_val.uninit & vAddr >= cursor then
+    else if cb_val.uninit & vAddr < cursor then
       raise_c2_exception(CapEx_UninitLoadViolation, cb)
     else if (vAddr % cap_size) != 0 then
       SignalExceptionBadAddr(AdEL, vAddr64)
