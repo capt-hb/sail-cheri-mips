@@ -319,3 +319,7 @@ val capAddrReachedEnd : Capability -> bool
 function capAddrReachedEnd(cap) =
     let top = cap.base + cap.length in
     (cap.address >=_u top) & (top >=_u cap.address)
+
+val setCapLength: (Capability, bits(64)) -> (bool, Capability)
+function setCapLength(cap, length) =
+    (true, {cap with length = length})
