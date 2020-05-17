@@ -146,15 +146,15 @@ function clause execute (CShrink(cd, cb)) =
 {
     checkCP2usable();
     let cap = readCapReg(cb);
-    let cursor = getCapCursor(cap);
+    let offset = getCapOffset(cap);
     let length = getCapLength(cap);
     if cap.sealed then
 	raise_c2_exception(CapEx_SealViolation, cb)
-    else if length < cursor then
+    else if length < offset then
 	raise_c2_exception(CapEx_LengthViolation, cb)
     else
     {
-	let (success, newCap) = setCapLength(cap, cap.address);
+	let (success, newCap) = setCapLength(cap, to_bits(64, offset));
 	if (success) then
 	   writeCapReg(cd, newCap)
 	else 
