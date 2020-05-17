@@ -141,6 +141,27 @@ function clause execute (CUninit(cd, cb)) =
    }
 }
 
+union clause ast = CShrink : (regno, regno)
+function clause execute (CShrink(cd, cb)) =
+{
+    checkCP2usable();
+    let cap = readCapReg(cb);
+    let cursor = getCapCursor(cap);
+    let length = getCapLength(cap);
+    if cap.sealed then
+	raise_c2_exception(CapEx_SealViolation, cb)
+    else if length < cursor then
+	raise_c2_exception(CapEx_LengthViolation, cb)
+    else
+    {
+	let (success, newCap) = setCapLength(cap, cap.address);
+	if (success) then
+	   writeCapReg(cd, newCap)
+	else 
+	   writeCapReg(cd, unrepCap(newCap))
+    }   
+}
+
 union clause ast = CGetPCC : regno
 function clause execute (CGetPCC(cd)) =
 {
@@ -1672,6 +1693,8 @@ function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegEnc @  
 function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @    0b11110 @ 0b111111) = Some(CLoadTags(rd, cb))
 
 function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @    0b11011 @ 0b111111) = Some(CUninit(cd, cb))
+
+function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @    0b11100 @ 0b111111) = Some(CShrink(cd, cb))
 
 /* Capability Inspection */
 function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @    0b00000 @ 0b111111) = Some(CGetPerm(rd, cb))
