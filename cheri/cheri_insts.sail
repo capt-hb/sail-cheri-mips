@@ -1298,7 +1298,7 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
 }
 
 union clause ast = UCStoreCap : (regno, regno, regno, bits(11))
-function clause execute (UCStoreCap(ct, cs, cb, offset)) =
+function clause execute (UCStoreCap(cd, cs, cb, offset)) =
 {
   checkCP2usable();
   let cs_val = readCapReg(cs);
@@ -1338,7 +1338,7 @@ function clause execute (UCStoreCap(ct, cs, cb, offset)) =
         Clear => false,
         Trap  => raise_c2_exception(CapEx_TLBNoStoreCap, cs)
       };
-      writeCapReg(ct, newCap);
+      writeCapReg(cd, newCap);
       MEMw_tagged(pAddr, cap_size, mtag, capToMemBits(cs_val))
     }
   }
@@ -1804,7 +1804,7 @@ function clause decode (0b111011 @ ct : CapRegEnc @ rs : IntRegEnc @ cb : CapReg
 function clause decode (0b111011 @ ct : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b10) = Some(UCStore(ct, rs, cb, offset, W)) /* UCSW */
 function clause decode (0b111011 @ ct : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b11) = Some(UCStore(ct, rs, cb, offset, D)) /* UCSD */
 
-function clause decode (0b111100 @ ct : CapRegEnc @ cs : CapRegEnc @ cb : CapRegEnc @ offset : bits(11)) = Some(UCStoreCap(ct, cs, cb, offset))
+function clause decode (0b111101 @ ct : CapRegEnc @ cs : CapRegEnc @ cb : CapRegEnc @ offset : bits(11)) = Some(UCStoreCap(ct, cs, cb, offset))
 
 function clause decode (0b010010 @ 0b10000 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rd : IntRegEnc @ 0b0000 @ 0b00) = Some(CStoreConditional(rs, cb, rd, B)) /* CSCB */
 function clause decode (0b010010 @ 0b10000 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rd : IntRegEnc @ 0b0000 @ 0b01) = Some(CStoreConditional(rs, cb, rd, H)) /* CSCH */
