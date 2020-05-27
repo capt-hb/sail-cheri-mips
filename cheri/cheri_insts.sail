@@ -1266,7 +1266,7 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
   else
   {
     let size   = wordWidthBytes(width);
-    let (ign, newCap) = if offset == zeros(8) then { // update cursor before writing
+    let (ign, newCap) = if cb_val.uninit & offset == zeros(8) then { // update cursor before writing
        let decr = to_bits(64, negate(size));
        incCapOffset(cb_val, decr);
     } else {
@@ -1315,7 +1315,7 @@ function clause execute (UCStoreCap(cd, cs, cb, offset)) =
     raise_c2_exception(CapEx_PermitStoreLocalCapViolation, cb)
   else
   {
-    let (ign, newCap) = if offset == zeros(11) then { // update cursor before writing
+    let (ign, newCap) = if cb_val.uninit & offset == zeros(11) then { // update cursor before writing
     	let decr = to_bits(64, negate(cap_size));
 	incCapOffset(cb_val, decr);
     } else {
