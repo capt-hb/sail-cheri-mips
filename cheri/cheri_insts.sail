@@ -150,11 +150,11 @@ function clause execute (CShrink(cd, cb)) =
     let length = getCapLength(cap);
     if cap.sealed then
 	raise_c2_exception(CapEx_SealViolation, cb)
-    else if length < offset then
+    else if length <= offset then 
 	raise_c2_exception(CapEx_LengthViolation, cb)
     else
     {
-	let (success, newCap) = setCapLength(cap, to_bits(64, offset));
+	let (success, newCap) = setCapLength(cap, to_bits(64, offset + 1)); // increment with one so the current offset is still in bounds
 	if (success) then
 	   writeCapReg(cd, newCap)
 	else 
