@@ -323,3 +323,8 @@ function capAddrReachedEnd(cap) =
 val setCapLength: (Capability, bits(64)) -> (bool, Capability)
 function setCapLength(cap, length) =
     (true, {cap with length = length})
+
+val shrinkCap: (Capability, bits(64), bits(65)) -> (bool, Capability)
+function shrinkCap(cap, base, address) =
+    let length : bits(65) = address + to_bits(65, 1) - (0b0 @ base) in
+    (true, {cap with base = base, length = length[63..0], address = address[63..0]})

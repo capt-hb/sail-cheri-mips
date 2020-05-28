@@ -141,20 +141,50 @@ function clause execute (CUninit(cd, cb)) =
    }
 }
 
-union clause ast = CShrink : (regno, regno)
-function clause execute (CShrink(cd, cb)) =
+union clause ast = CShrink : (regno, regno, regno)
+function clause execute (CShrink(cd, cb, rt)) =
 {
     checkCP2usable();
-    let cap = readCapReg(cb);
-    let offset = getCapOffset(cap);
-    let length = getCapLength(cap);
-    if cap.sealed then
+    let cb_val = readCapReg(cb);
+    let base = getCapBase(cb_val);
+    let newBase = unsigned(rGPR(rt));
+    let cursor = getCapCursor(cb_val);
+    let top = getCapTop(cb_val);
+    if cb_val.sealed then
 	raise_c2_exception(CapEx_SealViolation, cb)
-    else if length <= offset then 
+    else if newBase < base then
+	raise_c2_exception(CapEx_LengthViolation, cb)
+    else if top <= cursor then 
 	raise_c2_exception(CapEx_LengthViolation, cb)
     else
     {
-	let (success, newCap) = setCapLength(cap, to_bits(64, offset + 1)); // increment with one so the current offset is still in bounds
+	let (success, newCap) = shrinkCap(cb_val, to_bits(64, newBase), to_bits(65, cursor));
+	if (success) then
+	   writeCapReg(cd, newCap)
+	else 
+	   writeCapReg(cd, unrepCap(newCap))
+    }   
+}
+
+union clause ast = CShrinkImmediate : (regno, regno, bits(11))
+function clause execute (CShrinkImmediate(cd, cb, imm)) =
+{
+    checkCP2usable();
+    let cb_val = readCapReg(cb);
+    let base = getCapBase(cb_val);
+    let immU = unsigned(imm);
+    let cursor = getCapCursor(cb_val);
+    let top = getCapTop(cb_val);
+    let newBase = base + immU;
+    if cb_val.sealed then
+	raise_c2_exception(CapEx_SealViolation, cb)
+    else if newBase < base then
+	raise_c2_exception(CapEx_LengthViolation, cb)
+    else if top <= cursor then 
+	raise_c2_exception(CapEx_LengthViolation, cb)
+    else
+    {
+	let (success, newCap) = shrinkCap(cb_val, to_bits(64, newBase), to_bits(65, cursor));
 	if (success) then
 	   writeCapReg(cd, newCap)
 	else 
@@ -1694,7 +1724,6 @@ function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegOrDDCEn
 
 function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @    0b11011 @ 0b111111) = Some(CUninit(cd, cb))
 
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @    0b11100 @ 0b111111) = Some(CShrink(cd, cb))
 
 /* Capability Inspection */
 function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @    0b00000 @ 0b111111) = Some(CGetPerm(rd, cb))
@@ -1735,6 +1764,7 @@ function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegEnc @ r
 function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegOrDDCEnc @ ct : CapRegEnc @ 0b011101) = Some(CBuildCap(cd, cb, ct))
 function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b011110) = Some(CCopyType(cd, cb, ct))
 function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cs : CapRegEnc @ ct : CapRegEnc @ 0b011111) = Some(CCSeal(cd, cs, ct))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegEnc @ rt: IntRegEnc  @ 0b101100) = Some(CShrink(cd, cb, rt))
 
 /* Pointer Arithmetic */
 function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegEnc @ ct : CapRegEnc @ 0b010010) = Some(CToPtr(rd, cb, ct))
@@ -1777,6 +1807,7 @@ function clause decode (0b010010 @ 0b01111 @ 0b00011 @ imm : bits(16)) = Some(Cl
 
 function clause decode (0b010010 @ 0b10011 @ cd : CapRegEnc @ cb : CapRegEnc @ imm : bits(11)) = Some(CIncOffsetImmediate(cd, cb, imm))
 function clause decode (0b010010 @ 0b10100 @ cd : CapRegEnc @ cb : CapRegEnc @ imm : bits(11)) = Some(CSetBoundsImmediate(cd, cb, imm))
+function clause decode (0b010010 @ 0b10111 @ cd : CapRegEnc @ cb : CapRegEnc @ imm : bits(11)) = Some(CShrinkImmediate(cd, cb, imm))
 
 function clause decode (0b110010 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b0 @ 0b00) = Some(CLoad(rd, cb, rt, offset, false, B)) /* CLBU */
 function clause decode (0b110010 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b1 @ 0b00) = Some(CLoad(rd, cb, rt, offset, true,  B)) /* CLB */
