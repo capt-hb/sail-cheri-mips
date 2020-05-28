@@ -1296,13 +1296,7 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
   else
   {
     let size   = wordWidthBytes(width);
-    let (ign, newCap) = if cb_val.uninit & offset == zeros(8) then { // update cursor before writing
-       let decr = to_bits(64, negate(size));
-       incCapOffset(cb_val, decr);
-    } else {
-      (true, cb_val);
-    };
-    let cursor = getCapCursor(newCap);
+    let cursor = getCapCursor(cb_val);
     let vAddr  = (cursor + size * signed(offset)) % pow2(64);
     let vAddr64= to_bits(64, vAddr);
     if (vAddr + size) > getCapTop(cb_val) then
@@ -1315,7 +1309,13 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
     {
       let pAddr  = TLBTranslate(vAddr64, StoreData);
       let rs_val = rGPR(rs);
-      writeCapReg(ct, newCap);
+      if cb_val.uninit & offset == ones() then { 
+	let decr = to_bits(64, negate(size));
+	let (ign, newCap) = incCapOffset(cb_val, decr);
+	writeCapReg(ct, newCap)
+      } else {
+	writeCapReg(ct, cb_val);
+      };
       match width
       {
         B  => MEMw_wrapper(pAddr, 1) = rs_val[7..0],
@@ -1345,14 +1345,8 @@ function clause execute (UCStoreCap(cd, cs, cb, offset)) =
     raise_c2_exception(CapEx_PermitStoreLocalCapViolation, cb)
   else
   {
-    let (ign, newCap) = if cb_val.uninit & offset == zeros(11) then { // update cursor before writing
-    	let decr = to_bits(64, negate(cap_size));
-	incCapOffset(cb_val, decr);
-    } else {
-      (true, cb_val);
-    };
-    let cursor  = getCapCursor(newCap);
-    let vAddr   = (cursor + 16 * signed(offset)) % pow2(64);
+    let cursor  = getCapCursor(cb_val);
+    let vAddr   = (cursor + 32 * signed(offset)) % pow2(64);
     let vAddr64 = to_bits(64, vAddr);
     if (vAddr + cap_size) > getCapTop(cb_val) then
       raise_c2_exception(CapEx_LengthViolation, cb)
@@ -1368,7 +1362,13 @@ function clause execute (UCStoreCap(cd, cs, cb, offset)) =
         Clear => false,
         Trap  => raise_c2_exception(CapEx_TLBNoStoreCap, cs)
       };
-      writeCapReg(cd, newCap);
+      if cb_val.uninit & offset == ones() then { 
+    	let decr = to_bits(64, negate(cap_size));
+	let (ign, newCap) = incCapOffset(cb_val, decr);
+	writeCapReg(cd, newCap);
+      } else {
+	writeCapReg(cd, cb_val);
+      };
       MEMw_tagged(pAddr, cap_size, mtag, capToMemBits(cs_val))
     }
   }
