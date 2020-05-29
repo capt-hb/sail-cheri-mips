@@ -1346,7 +1346,7 @@ function clause execute (UCStoreCap(cd, cs, cb, offset)) =
   else
   {
     let cursor  = getCapCursor(cb_val);
-    let vAddr   = (cursor + 32 * signed(offset)) % pow2(64);
+    let vAddr   = (cursor + cap_size * signed(offset)) % pow2(64);
     let vAddr64 = to_bits(64, vAddr);
     if (vAddr + cap_size) > getCapTop(cb_val) then
       raise_c2_exception(CapEx_LengthViolation, cb)
