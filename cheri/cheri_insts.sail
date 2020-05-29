@@ -154,7 +154,7 @@ function clause execute (CShrink(cd, cb, rt)) =
 	raise_c2_exception(CapEx_SealViolation, cb)
     else if newBase < base then
 	raise_c2_exception(CapEx_LengthViolation, cb)
-    else if top <= cursor then 
+    else if top < cursor then 
 	raise_c2_exception(CapEx_LengthViolation, cb)
     else
     {
@@ -180,7 +180,7 @@ function clause execute (CShrinkImmediate(cd, cb, imm)) =
 	raise_c2_exception(CapEx_SealViolation, cb)
     else if newBase < base then
 	raise_c2_exception(CapEx_LengthViolation, cb)
-    else if top <= cursor then 
+    else if top < cursor then 
 	raise_c2_exception(CapEx_LengthViolation, cb)
     else
     {
