@@ -515,9 +515,10 @@ function clause execute (CSetOffset(cd, cb, rt)) =
   checkCP2usable();
   let cb_val = readCapReg(cb);
   let rt_val = rGPR(rt);
+  let offset = getCapOffset(cb_val);
   if cb_val.tag & cb_val.sealed then
     raise_c2_exception(CapEx_SealViolation, cb)
-  else if cb_val.tag & cb_val.uninit & rt_val[63] then // uninit: don't allow lowering cursor
+  else if cb_val.tag & cb_val.uninit & (unsigned(rt_val) < offset) then // uninit: don't allow lowering cursor
     raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
@@ -537,7 +538,7 @@ function clause execute (CSetAddr(cd, cb, rt)) =
   let rt_val = rGPR(rt);
   if cb_val.tag & cb_val.sealed then
     raise_c2_exception(CapEx_SealViolation, cb)
-  else if cb_val.tag & cb_val.uninit & (rt_val <_s cb_val.address) then // uninit: don't allow setting address lower
+  else if cb_val.tag & cb_val.uninit & (rt_val <_u cb_val.address) then // uninit: don't allow setting address lower
     raise_c2_exception(CapEx_UninitViolation, cb)
   else
   {
@@ -555,18 +556,21 @@ function clause execute (CAndAddr(cd, cb, rt)) =
   checkCP2usable();
   let cb_val = readCapReg(cb);
   let rt_val = rGPR(rt);
+  let addr = cb_val.address;
   if cb_val.tag & cb_val.sealed then
     raise_c2_exception(CapEx_SealViolation, cb)
   else
   {
     let newAddr = cb_val.address & rt_val;
-    let (representable, newCap) = setCapAddr(cb_val, newAddr);
-    if cb_val.uninit & (rt_val <_s cb_val.address) then // uninit: don't allow setting address lower
+    if cb_val.tag & cb_val.uninit & (newAddr <_u addr) then
       raise_c2_exception(CapEx_UninitViolation, cb)
-    else if representable then
-        writeCapReg(cd, newCap)
-    else
-        writeCapReg(cd, unrepCap(newCap));
+    else {
+      let (representable, newCap) = setCapAddr(cb_val, newAddr);
+      if representable then
+	writeCapReg(cd, newCap)
+      else
+	writeCapReg(cd, unrepCap(newCap));
+    }
   }
 }
 
