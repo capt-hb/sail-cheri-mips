@@ -327,4 +327,4 @@ function setCapLength(cap, length) =
 val shrinkCap: (Capability, bits(64), bits(65)) -> (bool, Capability)
 function shrinkCap(cap, base, address) =
     let length : bits(65) = address - (0b0 @ base) in
-    (true, {cap with base = base, length = length[63..0], address = address[63..0]})
+    (true, {cap with base = base, length = length[63..0]})

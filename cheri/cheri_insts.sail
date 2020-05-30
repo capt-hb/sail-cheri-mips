@@ -1287,7 +1287,7 @@ function clause execute (CStore(rs, cb, rt, offset, width)) =
 }
 
 union clause ast = UCStore : (regno, regno, regno, bits(8), WordType)
-function clause execute (UCStore(ct, rs, cb, offset, width)) =
+function clause execute (UCStore(cd, rs, cb, offset, width)) =
 {
   checkCP2usable();
   let cb_val = readCapRegDDC(cb);
@@ -1315,10 +1315,10 @@ function clause execute (UCStore(ct, rs, cb, offset, width)) =
       let rs_val = rGPR(rs);
       if cb_val.uninit & offset == ones() then { 
 	let decr = to_bits(64, negate(size));
-	let (ign, newCap) = incCapOffset(cb_val, decr);
-	writeCapReg(ct, newCap)
+	let (_, newCap) = incCapOffset(cb_val, decr);
+	writeCapReg(cd, newCap)
       } else {
-	writeCapReg(ct, cb_val);
+	writeCapReg(cd, cb_val);
       };
       match width
       {
@@ -1368,7 +1368,7 @@ function clause execute (UCStoreCap(cd, cs, cb, offset)) =
       };
       if cb_val.uninit & offset == ones() then { 
     	let decr = to_bits(64, negate(cap_size));
-	let (ign, newCap) = incCapOffset(cb_val, decr);
+	let (_, newCap) = incCapOffset(cb_val, decr);
 	writeCapReg(cd, newCap);
       } else {
 	writeCapReg(cd, cb_val);
@@ -1726,7 +1726,7 @@ function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegEnc @  
 
 function clause decode (0b010010 @ 0b00000 @ rd : IntRegEnc @ cb : CapRegOrDDCEnc @    0b11110 @ 0b111111) = Some(CLoadTags(rd, cb))
 
-function clause decode (0b010010 @ 0b00000 @ cd : regno @ cb : regno @    0b11011 @ 0b111111) = Some(CUninit(cd, cb))
+function clause decode (0b010010 @ 0b00000 @ cd : CapRegEnc @ cb : CapRegEnc @    0b11011 @ 0b111111) = Some(CUninit(cd, cb))
 
 
 /* Capability Inspection */
@@ -1834,12 +1834,12 @@ function clause decode (0b111010 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : I
 function clause decode (0b111010 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b0 @ 0b10) = Some(CStore(rs, cb, rt, offset, W)) /* CSW */
 function clause decode (0b111010 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rt : IntRegEnc @ offset : bits(8) @ 0b0 @ 0b11) = Some(CStore(rs, cb, rt, offset, D)) /* CSD */
 
-function clause decode (0b111011 @ ct : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b00) = Some(UCStore(ct, rs, cb, offset, B)) /* UCSB */
-function clause decode (0b111011 @ ct : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b01) = Some(UCStore(ct, rs, cb, offset, H)) /* UCSH */
-function clause decode (0b111011 @ ct : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b10) = Some(UCStore(ct, rs, cb, offset, W)) /* UCSW */
-function clause decode (0b111011 @ ct : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b11) = Some(UCStore(ct, rs, cb, offset, D)) /* UCSD */
+function clause decode (0b111011 @ cd : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b00) = Some(UCStore(cd, rs, cb, offset, B)) /* UCSB */
+function clause decode (0b111011 @ cd : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b01) = Some(UCStore(cd, rs, cb, offset, H)) /* UCSH */
+function clause decode (0b111011 @ cd : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b10) = Some(UCStore(cd, rs, cb, offset, W)) /* UCSW */
+function clause decode (0b111011 @ cd : CapRegEnc @ rs : IntRegEnc @ cb : CapRegEnc @ offset : bits(8) @ 0b0 @ 0b11) = Some(UCStore(cd, rs, cb, offset, D)) /* UCSD */
 
-function clause decode (0b111101 @ ct : CapRegEnc @ cs : CapRegEnc @ cb : CapRegEnc @ offset : bits(11)) = Some(UCStoreCap(ct, cs, cb, offset))
+function clause decode (0b111101 @ cd : CapRegEnc @ cs : CapRegEnc @ cb : CapRegEnc @ offset : bits(11)) = Some(UCStoreCap(cd, cs, cb, offset))
 
 function clause decode (0b010010 @ 0b10000 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rd : IntRegEnc @ 0b0000 @ 0b00) = Some(CStoreConditional(rs, cb, rd, B)) /* CSCB */
 function clause decode (0b010010 @ 0b10000 @ rs : IntRegEnc @ cb : CapRegOrDDCEnc @ rd : IntRegEnc @ 0b0000 @ 0b01) = Some(CStoreConditional(rs, cb, rd, H)) /* CSCH */
