@@ -134,6 +134,8 @@ function clause execute (CUninit(cd, cb)) =
    let cap  = readCapReg(cb);
    if cap.sealed then
     raise_c2_exception(CapEx_SealViolation, cb)
+   else if ~ (cap.permit_store & cap.permit_load & (cap.permit_store_cap | cap.permit_store_local_cap) & cap.permit_load_cap) then
+    raise_c2_exception(CapEx_UninitViolation, cb)
    else
    {
     let newCap = uninitCap(cap);
