@@ -55,7 +55,8 @@ struct Capability = {
   permit_load            : bool    ,
   permit_execute         : bool    ,
   global                 : bool    ,
-  reserved               : bits(3) ,
+  uninit		 : bool    ,
+  reserved               : bits(2) ,
   internal_e             : bool    ,
   E                      : bits(6) ,
   sealed                 : bool    ,
@@ -84,6 +85,7 @@ let null_cap : Capability = struct {
   permit_load            = false,
   permit_execute         = false,
   global                 = false,
+  uninit                 = false,
   reserved               = zeros(),
   internal_e             = true,
   E                      = resetE,
@@ -109,6 +111,7 @@ let default_cap : Capability = struct {
   permit_load            = true,
   permit_execute         = true,
   global                 = true,
+  uninit		 = false,
   reserved               = zeros(),
   internal_e             = true,
   E                      = resetE,
@@ -169,7 +172,8 @@ function capBitsToCapability(t, c) : (bool, CapBits) -> Capability = {
     permit_load            = c[114],
     permit_execute         = c[113],
     global                 = c[112],
-    reserved               = c[111..109],
+    uninit		   = c[111],
+    reserved               = c[110..109],
     internal_e             = internal_exponent,
     E                      = E,
     sealed                 = sealed,
@@ -208,6 +212,7 @@ function capToBits(cap) : Capability -> bits(128) = {
   };
   return (cap.uperms
     @ getCapHardPerms(cap)
+    @ cap.uninit
     @ cap.reserved
     @ cap.otype
     @ cap.internal_e
@@ -518,3 +523,13 @@ function setCapBounds_hw(cap, base, top) : (Capability, bits(64), bits(65)) -> (
   (exact, newCap)
 }
 */
+
+val uninitCap : Capability -> Capability
+function uninitCap(cap) =
+    { cap with uninit=true }
+
+val shrinkCap: (Capability, bits(64), bits(65)) -> (bool, Capability)
+function shrinkCap(cap, base, address) = {
+  let (succ, c) = setCapBounds(cap, base, address) in
+  (succ, {c with address=address[63..0]})
+}
